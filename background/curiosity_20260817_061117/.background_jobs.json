@@ -1,0 +1,13 @@
+[
+  {
+    "job_id": "681fc2e162bb",
+    "folder": "background/curiosity_20260817_061117",
+    "topic": "add comprehensive input validation to the coordinator",
+    "model": "llama3",
+    "status": "failed",
+    "created_at": "2026-08-17T06:11:17.879271+00:00",
+    "result": "Failed to run curiosity: [Errno -2] Name or service not known",
+    "error": "[Errno -2] Name or service not known",
+    "completed_at": "2026-08-17T06:11:18.045001+00:00"
+  }
+]

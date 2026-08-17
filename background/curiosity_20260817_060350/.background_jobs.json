@@ -1,0 +1,12 @@
+[
+  {
+    "job_id": "1e365cd7c32c",
+    "folder": "background/curiosity_20260817_060350",
+    "topic": "add request validation to the coordinator endpoints",
+    "model": "llama3",
+    "status": "failed",
+    "created_at": "2026-08-17T06:03:50.044132+00:00",
+    "result": "Failed to run curiosity task: asyncio.run() cannot be called from a running event loop",
+    "error": "asyncio.run() cannot be called from a running event loop"
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "job_id": "7c376440f4e3",
+  "folder": "background/curiosity_20260817_060350",
+  "topic": "add request validation to the coordinator endpoints",
+  "model": "llama3",
+  "status": "queued",
+  "created_at": "2026-08-17T06:03:50.043105+00:00"
+}

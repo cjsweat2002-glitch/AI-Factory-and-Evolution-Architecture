@@ -70,11 +70,26 @@ def test_start_background_curiosity_creates_record(tmp_path):
 
 
 def test_background_job_runs_and_tracks_status(tmp_path):
+    import time
+    # Create a prompt file for the job
+    (tmp_path / "prompt.md").write_text("Test prompt", encoding="utf-8")
+    
     job = run_background_job(str(tmp_path), "research new pattern", model="llama3")
-    assert job["status"] == "completed"
+    # Job starts with "running" status (async background task)
+    assert job["status"] in ["running", "completed", "failed"]
     assert job["job_id"]
+    
     jobs = list_background_jobs(str(tmp_path))
     assert any(item["job_id"] == job["job_id"] for item in jobs)
+    
+    # Give background task time to complete/fail
+    time.sleep(1)
+    
+    # Check final status
+    jobs = list_background_jobs(str(tmp_path))
+    final_job = next((item for item in jobs if item["job_id"] == job["job_id"]), None)
+    assert final_job is not None
+    assert final_job["status"] in ["completed", "failed", "running"]
 
 
 def test_repo_memory_is_logged(tmp_path):

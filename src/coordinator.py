@@ -232,11 +232,24 @@ async def add_factory_inspiration(request: Request):
 
 @app.get("/factory/status")
 async def factory_status():
-    background_jobs = list_background_jobs("background")
+    # Collect jobs from all curiosity session folders
+    background_root = Path("background")
+    all_jobs = []
+    
+    if background_root.exists():
+        for session_folder in background_root.iterdir():
+            if session_folder.is_dir():
+                jobs = list_background_jobs(str(session_folder))
+                all_jobs.extend(jobs)
+    
+    # Also check the root background folder for any direct jobs
+    root_jobs = list_background_jobs("background")
+    all_jobs.extend(root_jobs)
+    
     memory_dir = Path("memory")
     return {
         "status": "running",
-        "background_jobs": background_jobs,
+        "background_jobs": all_jobs,
         "memory_dir": str(memory_dir),
         "has_memory": memory_dir.exists(),
     }
