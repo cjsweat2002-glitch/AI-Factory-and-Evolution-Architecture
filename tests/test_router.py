@@ -153,3 +153,41 @@ def test_frontend_chat_bridge_returns_worker_response(monkeypatch):
     assert response.status_code == 200
     assert response.json()["model"] == "gemma"
     assert "Connected successfully" in response.json()["choices"][0]["message"]["content"]
+
+
+def test_frontend_chat_bridge_sends_openai_auth_header(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self._payload = {"model": "gpt-4o-mini", "choices": [{"message": {"content": "OpenAI reply"}}]}
+            self.headers = {}
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            return None
+
+    async def fake_post(self, *args, **kwargs):
+        captured["headers"] = kwargs.get("headers")
+        captured["url"] = args[0] if args else kwargs.get("url")
+        return FakeResponse()
+
+    monkeypatch.setenv("AI_FACTORY_WORKER_URL", "https://api.openai.com")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123")
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+    response = client.post(
+        "/api/frontend/chat",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Test OpenAI"}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["headers"]["Authorization"] == "Bearer sk-test-123"
+    assert "https://api.openai.com/v1/chat/completions" in captured["url"]

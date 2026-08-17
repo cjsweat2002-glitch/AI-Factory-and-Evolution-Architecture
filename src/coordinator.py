@@ -43,16 +43,31 @@ def load_nodes():
 
 
 _node_iterator = None
+_node_signature = None
 
 
 def get_next_node():
-    global _node_iterator
+    global _node_iterator, _node_signature
     nodes = load_nodes()
     if not nodes:
         raise HTTPException(status_code=503, detail="No worker nodes registered.")
-    if _node_iterator is None:
+
+    signature = tuple(
+        (node.get("name"), node.get("url"), tuple(node.get("models", [])))
+        for node in nodes
+    )
+    if _node_iterator is None or signature != _node_signature:
         _node_iterator = itertools.cycle(nodes)
+        _node_signature = signature
     return next(_node_iterator)
+
+
+def build_worker_headers(target_url: str):
+    headers = {}
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_TOKEN")
+    if api_key and ("api.openai.com" in target_url or "openai.com" in target_url):
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -82,8 +97,9 @@ async def chat_from_dashboard(request: Request):
     target_url = f"{target_node['url']}/v1/chat/completions"
 
     try:
+        headers = build_worker_headers(target_url)
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(target_url, json=upstream_payload)
+            response = await client.post(target_url, json=upstream_payload, headers=headers)
             response.raise_for_status()
             data = response.json()
             content = data["choices"][0]["message"]["content"]
@@ -104,8 +120,13 @@ async def frontend_chat_bridge(request: Request):
     target_url = f"{target_node['url']}/v1/chat/completions"
 
     try:
+        headers = build_worker_headers(target_url)
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(target_url, json={"model": model, "messages": messages, "stream": payload.get("stream", False)})
+            response = await client.post(
+                target_url,
+                json={"model": model, "messages": messages, "stream": payload.get("stream", False)},
+                headers=headers,
+            )
             response.raise_for_status()
             data = response.json()
             content = data.get("choices", [{}])[0].get("message", {}).get("content") if data.get("choices") else data.get("response", "")
@@ -243,6 +264,8 @@ async def proxy_request(path: str, request: Request):
     client_body = await request.body()
     headers = dict(request.headers)
     headers.pop("host", None)
+    openai_headers = build_worker_headers(target_url)
+    headers.update(openai_headers)
 
     async def stream_generator(response):
         async for chunk in response.aiter_bytes():
