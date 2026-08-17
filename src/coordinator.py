@@ -113,6 +113,7 @@ async def frontend_chat_bridge(request: Request):
     payload = await request.json()
     messages = payload.get("messages") or [{"role": "user", "content": payload.get("message", "")}]
     model = payload.get("model", "llama3")
+    stream = payload.get("stream", False)
     if not messages:
         return JSONResponse({"error": "No message provided."}, status_code=400)
 
@@ -124,23 +125,43 @@ async def frontend_chat_bridge(request: Request):
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 target_url,
-                json={"model": model, "messages": messages, "stream": payload.get("stream", False)},
+                json={"model": model, "messages": messages, "stream": stream},
                 headers=headers,
             )
             response.raise_for_status()
-            data = response.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content") if data.get("choices") else data.get("response", "")
-            return {
-                "id": "chatcmpl-frontend",
-                "object": "chat.completion",
-                "created": int(datetime.now().timestamp()),
-                "model": data.get("model", model),
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": content},
-                    "finish_reason": "stop",
-                }],
-            }
+
+            if stream:
+                async def stream_generator():
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk_data = json.loads(data_str)
+                                delta = chunk_data.get("choices", [{}])[0].get("delta", {})
+                                if "content" in delta:
+                                    chunk = {"choices": [{"delta": {"content": delta["content"]}}]}
+                                    yield f"data: {json.dumps(chunk)}\n\n"
+                            except json.JSONDecodeError:
+                                pass
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(stream_generator(), media_type="text/event-stream")
+            else:
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content") if data.get("choices") else data.get("response", "")
+                return {
+                    "id": "chatcmpl-frontend",
+                    "object": "chat.completion",
+                    "created": int(datetime.now().timestamp()),
+                    "model": data.get("model", model),
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }],
+                }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Frontend AI bridge failed: {str(exc)}")
 

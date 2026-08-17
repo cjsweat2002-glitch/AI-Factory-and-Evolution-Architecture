@@ -158,6 +158,16 @@
         </div>
 
         <div class="card">
+          <h3>Live Opencode session</h3>
+          <div class="muted" id="liveSessionStatus">Starting live session…</div>
+          <div class="muted" id="liveSessionMeta" style="margin-top:10px;">Session ID: pending</div>
+          <div class="chat-output" id="liveSessionOutput" style="margin-top:12px;">Waiting for the AI to open a session…</div>
+          <button id="startLiveSession">Start live session</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="card">
           <h3>Notebook import guard</h3>
           <input id="notebookFile" type="file" accept=".ipynb,.json" style="margin-top:10px;" />
           <button id="importNotebook">Import safe notebook</button>
@@ -198,7 +208,9 @@
       </div>
     </div>
 
-    <script>
+    <script type="module">
+      import { createOpencode } from 'https://esm.sh/@opencode-ai/sdk';
+
       const systemStatus = document.getElementById('systemStatus');
       const workerCount = document.getElementById('workerCount');
       const workerList = document.getElementById('workerList');
@@ -208,6 +220,9 @@
       const memoryPath = document.getElementById('memoryPath');
       const factoryLog = document.getElementById('factoryLog');
       const chatOutput = document.getElementById('chatOutput');
+      const liveSessionStatus = document.getElementById('liveSessionStatus');
+      const liveSessionMeta = document.getElementById('liveSessionMeta');
+      const liveSessionOutput = document.getElementById('liveSessionOutput');
 
       async function refreshDashboard() {
         try {
@@ -249,6 +264,38 @@
         }
       }
 
+      async function startLiveSession() {
+        try {
+          liveSessionStatus.textContent = 'Opening live session…';
+          liveSessionOutput.textContent = 'Connecting to Opencode…';
+
+          const { client } = await createOpencode();
+          const session = await client.session.create({ body: { title: 'AI Factory Launch Session' } });
+
+          liveSessionMeta.textContent = `Session ID: ${session.id}`;
+          liveSessionStatus.textContent = 'Live session connected';
+
+          const result = await client.session.prompt({
+            path: { id: session.id },
+            body: {
+              parts: [{ type: 'text', text: 'Welcome to the AI Factory. Explain the mission and current learning loop.' }],
+            },
+          });
+
+          let responseText = 'Session started successfully.';
+          if (result && typeof result === 'object') {
+            responseText = result.text || result.output || result.message || JSON.stringify(result, null, 2);
+          }
+
+          liveSessionOutput.textContent = String(responseText).slice(0, 2000);
+          factoryLog.textContent = `Live Opencode session started: ${session.id}`;
+        } catch (error) {
+          liveSessionStatus.textContent = 'Live session unavailable';
+          liveSessionOutput.textContent = `Opencode could not start: ${error.message || error}`;
+          factoryLog.textContent = `Opencode session error: ${error.message || error}`;
+        }
+      }
+
       document.getElementById('sendChat').addEventListener('click', async () => {
         const message = document.getElementById('chatInput').value.trim();
         if (!message) {
@@ -271,6 +318,8 @@
         document.getElementById('chatInput').value = '';
         refreshDashboard();
       });
+
+      document.getElementById('startLiveSession').addEventListener('click', startLiveSession);
 
       document.getElementById('importNotebook').addEventListener('click', async () => {
         const fileInput = document.getElementById('notebookFile');
@@ -341,6 +390,7 @@
 
       refreshDashboard();
       setInterval(refreshDashboard, 4000);
+      startLiveSession();
     </script>
   </body>
 </html>
