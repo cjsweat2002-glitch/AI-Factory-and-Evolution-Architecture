@@ -1,4 +1,5 @@
 import itertools
+import json
 import os
 import subprocess
 from datetime import datetime
@@ -21,6 +22,19 @@ CONFIG_PATH = Path("config/nodes.yaml")
 
 
 def load_nodes():
+    env_nodes = os.getenv("AI_FACTORY_NODES")
+    if env_nodes:
+        try:
+            parsed = json.loads(env_nodes)
+            if isinstance(parsed, list) and parsed:
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    env_worker_url = os.getenv("AI_FACTORY_WORKER_URL")
+    if env_worker_url:
+        return [{"name": "env-worker", "url": env_worker_url, "models": [os.getenv("AI_FACTORY_MODEL", "llama3")]}]
+
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, "r") as f:
             data = yaml.safe_load(f) or {}

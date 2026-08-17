@@ -13,6 +13,10 @@ services:
         value: 8000
       - key: AI_FACTORY_MODEL
         value: llama3
+      - key: AI_FACTORY_WORKER_URL
+        sync: false
+      - key: AI_FACTORY_NODES
+        sync: false
       - key: GITHUB_REPO
         sync: false
       - key: GITHUB_BRANCH

@@ -43,6 +43,17 @@ def test_root_page_renders_dashboard():
     assert "Worker pool" in response.text
 
 
+def test_load_nodes_accepts_public_env_override(monkeypatch):
+    monkeypatch.setenv("AI_FACTORY_NODES", json.dumps([
+        {"name": "render-worker", "url": "https://example-ollama.render.com", "models": ["llama3"]}
+    ]))
+    monkeypatch.setattr("src.coordinator.CONFIG_PATH", __import__("pathlib").Path("/tmp/does-not-exist.yaml"))
+    from src import coordinator
+    nodes = coordinator.load_nodes()
+    assert nodes[0]["url"] == "https://example-ollama.render.com"
+    assert nodes[0]["models"] == ["llama3"]
+
+
 def test_generate_curiosity_prompt_contains_workspace_guidance():
     prompt = generate_curiosity_prompt("web research", "/tmp/factory-demo")
     assert "web research" in prompt
