@@ -1,0 +1,12 @@
+nodes:
+  - name: worker-primary
+    url: http://worker-primary:11434
+    models:
+      - llama3
+      - gemma
+      - deepseek-r1
+  - name: worker-secondary
+    url: http://192.168.1.50:11434
+    models:
+      - llama3
+      - codestral

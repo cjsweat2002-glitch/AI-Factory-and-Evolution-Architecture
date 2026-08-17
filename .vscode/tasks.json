@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "AI Pool: Setup venv",
+      "type": "shell",
+      "command": "python3 -m venv .venv && . .venv/bin/activate && pip install -q pytest fastapi httpx pyyaml pydantic uvicorn",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI Pool: Run tests",
+      "type": "shell",
+      "command": ". .venv/bin/activate && pytest -q",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI Pool: Start app",
+      "type": "shell",
+      "command": ". .venv/bin/activate && uvicorn src.coordinator:app --host 0.0.0.0 --port 8000 --reload",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
