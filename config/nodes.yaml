@@ -1,4 +1,9 @@
 nodes:
+  - name: seed-worker-local
+    url: http://localhost:11434
+    models:
+      - seed-llama3
+      - seed-reasoning
   - name: worker-primary
     url: http://worker-primary:11434
     models:

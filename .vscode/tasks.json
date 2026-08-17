@@ -27,6 +27,15 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "AI Pool: Start seed worker",
+      "type": "shell",
+      "command": ". .venv/bin/activate && python3 -m uvicorn src.seed_worker:app --host 0.0.0.0 --port 11434 --reload",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
     }
   ]
 }
