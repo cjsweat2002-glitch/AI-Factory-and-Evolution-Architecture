@@ -1,0 +1,11 @@
+[
+  {
+    "job_id": "42fa18ae2d4a",
+    "folder": "background/curiosity_20260817_033727",
+    "topic": "better routing",
+    "model": "llama3",
+    "status": "completed",
+    "created_at": "2026-08-17T03:37:27.047735+00:00",
+    "result": "Curiosity task completed: better routing"
+  }
+]

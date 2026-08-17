@@ -1,15 +1,18 @@
 import itertools
+import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from src.factory import start_background_curiosity
 from src.factory_memory import log_repo_memory
 from src.factory_worker import list_background_jobs, run_background_job
+from src.notebook_guard import safe_import_notebook
 from src.web_inspiration import ingest_web_inspiration
 
 app = FastAPI(title="AI Pool Gateway")
@@ -40,44 +43,100 @@ def get_next_node():
 
 @app.get("/", response_class=HTMLResponse)
 async def root_page():
-    nodes = load_nodes()
-    nodes_html = "\n".join(
-        f"<li><strong>{node.get('name', 'worker')}</strong> — {node.get('url', 'unknown')}<br><small>Models: {', '.join(node.get('models', [])) or 'n/a'}</small></li>"
-        for node in nodes
-    )
-    if not nodes_html:
-        nodes_html = "<li>No workers registered.</li>"
+    return FileResponse("templates/dashboard.html")
 
-    return f"""
-    <html>
-      <head>
-        <title>AI Pool Coordinator</title>
-        <style>
-          body {{ font-family: Arial, sans-serif; margin: 2rem; background: #0f172a; color: #e2e8f0; }}
-          .card {{ max-width: 900px; margin: auto; background: #111827; padding: 2rem; border-radius: 12px; }}
-          h1 {{ color: #7dd3fc; }}
-          ul {{ line-height: 1.8; }}
-          code {{ background: #1f2937; padding: 0.2rem 0.4rem; border-radius: 6px; }}
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>AI Pool Coordinator</h1>
-          <p>OpenAI-compatible request gateway with round-robin worker routing and health-aware selection.</p>
-          <p><strong>Worker Pool</strong></p>
-          <ul>{nodes_html}</ul>
-          <p><strong>Factory AI Layers</strong></p>
-          <ul>
-            <li>Curiosity jobs: <code>/factory/curiosity</code></li>
-            <li>Repo memory: <code>/factory/memory</code></li>
-            <li>Web inspiration ingestion: <code>/factory/inspiration</code></li>
-            <li>Status: <code>/factory/status</code></li>
-          </ul>
-          <p>Endpoints: <code>/v1/chat/completions</code>, <code>/v1/models</code>, and more.</p>
-        </div>
-      </body>
-    </html>
-    """
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page():
+    return FileResponse("templates/dashboard.html")
+
+
+@app.post("/api/chat")
+async def chat_from_dashboard(request: Request):
+    payload = await request.json()
+    message = payload.get("message", "").strip()
+    model = payload.get("model", "llama3")
+    if not message:
+        return JSONResponse({"error": "No message provided."}, status_code=400)
+
+    upstream_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": message}],
+        "stream": False,
+    }
+    target_node = get_next_node()
+    target_url = f"{target_node['url']}/v1/chat/completions"
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(target_url, json=upstream_payload)
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return {"reply": content, "model": model}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI worker unavailable: {str(exc)}")
+
+
+@app.post("/api/frontend/chat")
+async def frontend_chat_bridge(request: Request):
+    payload = await request.json()
+    messages = payload.get("messages") or [{"role": "user", "content": payload.get("message", "")}]
+    model = payload.get("model", "llama3")
+    if not messages:
+        return JSONResponse({"error": "No message provided."}, status_code=400)
+
+    target_node = get_next_node()
+    target_url = f"{target_node['url']}/v1/chat/completions"
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(target_url, json={"model": model, "messages": messages, "stream": payload.get("stream", False)})
+            response.raise_for_status()
+            data = response.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content") if data.get("choices") else data.get("response", "")
+            return {
+                "id": "chatcmpl-frontend",
+                "object": "chat.completion",
+                "created": int(datetime.now().timestamp()),
+                "model": data.get("model", model),
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }],
+            }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Frontend AI bridge failed: {str(exc)}")
+
+
+@app.post("/api/notebooks/import")
+async def import_notebook(request: Request):
+    try:
+        form = await request.form()
+        uploaded_file = form.get("file") if form else None
+        if uploaded_file is not None:
+            notebook_path = Path("uploads") / (uploaded_file.filename or "notebook.ipynb")
+            notebook_path.parent.mkdir(parents=True, exist_ok=True)
+            notebook_path.write_bytes(await uploaded_file.read())
+            data = safe_import_notebook(notebook_path)
+            return {"status": "imported", "notebook": str(notebook_path), "safe": True, "cells": data["cells"]}
+
+        body = await request.json()
+        if "notebook_path" in body:
+            data = safe_import_notebook(Path(body["notebook_path"]))
+            return {"status": "imported", "notebook": body["notebook_path"], "safe": True, "cells": data["cells"]}
+
+        if "notebook_content" in body:
+            notebook_path = Path("uploads") / "imported_notebook.ipynb"
+            notebook_path.parent.mkdir(parents=True, exist_ok=True)
+            notebook_path.write_text(body["notebook_content"], encoding="utf-8")
+            data = safe_import_notebook(notebook_path)
+            return {"status": "imported", "notebook": str(notebook_path), "safe": True, "cells": data["cells"]}
+
+        return JSONResponse({"error": "No notebook content or path supplied."}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": f"Notebook import failed: {str(exc)}"}, status_code=400)
 
 
 @app.post("/factory/curiosity")
@@ -125,6 +184,41 @@ async def factory_status():
         "memory_dir": str(memory_dir),
         "has_memory": memory_dir.exists(),
     }
+
+
+@app.post("/factory/github/push")
+async def push_factory_changes(request: Request):
+    payload = await request.json()
+    message = payload.get("message", "Factory update from the AI dashboard")
+    repo = payload.get("repo") or os.getenv("GITHUB_REPO")
+    branch = payload.get("branch") or os.getenv("GITHUB_BRANCH", "main")
+    token = payload.get("token") or os.getenv("GITHUB_TOKEN")
+
+    if not repo:
+        return JSONResponse({"error": "GitHub repo is not configured. Set GITHUB_REPO."}, status_code=400)
+    if not token:
+        return JSONResponse({"error": "GitHub token is not configured. Set GITHUB_TOKEN."}, status_code=400)
+
+    repo_path = Path(".").resolve()
+    remote_url = f"https://x-access-token:{token}@github.com/{repo}.git"
+
+    try:
+        subprocess.run(["git", "config", "user.name", "AI Factory Bot"], cwd=str(repo_path), check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "factory-bot@example.com"], cwd=str(repo_path), check=True, capture_output=True, text=True)
+        subprocess.run(["git", "add", "-A"], cwd=str(repo_path), check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", message], cwd=str(repo_path), check=True, capture_output=True, text=True)
+        subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=str(repo_path), check=True, capture_output=True, text=True)
+        subprocess.run(["git", "push", "origin", branch], cwd=str(repo_path), check=True, capture_output=True, text=True)
+        return {"status": "pushed", "repo": repo, "branch": branch, "message": message}
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        return JSONResponse({
+            "status": "push_failed",
+            "repo": repo,
+            "branch": branch,
+            "stderr": stderr or stdout or str(exc),
+        }, status_code=500)
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
