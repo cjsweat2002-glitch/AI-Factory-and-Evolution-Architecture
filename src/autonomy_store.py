@@ -1,11 +1,14 @@
 import json
+import hashlib
 import math
 import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 
 METRIC_DIRECTIONS = {
@@ -162,6 +165,95 @@ def _connect() -> sqlite3.Connection:
             verbose_chars INTEGER NOT NULL,
             estimated_tokens INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_signal_graph_snapshots (
+            id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL UNIQUE,
+            node_count INTEGER NOT NULL,
+            edge_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_signal_graph_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            snapshot_id TEXT NOT NULL REFERENCES agent_signal_graph_snapshots(id),
+            changed_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_signal_nodes (
+            id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            cycle_id TEXT,
+            authority_id TEXT,
+            domain TEXT NOT NULL,
+            signal_type TEXT NOT NULL,
+            salience REAL NOT NULL,
+            summary TEXT NOT NULL,
+            source_ref TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(source_type, source_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_signal_edges (
+            source_id TEXT NOT NULL REFERENCES agent_signal_nodes(id),
+            target_id TEXT NOT NULL REFERENCES agent_signal_nodes(id),
+            relation TEXT NOT NULL,
+            weight REAL NOT NULL,
+            PRIMARY KEY(source_id, target_id, relation)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_intent_qa_suites (
+            id TEXT PRIMARY KEY,
+            snapshot_id TEXT NOT NULL UNIQUE
+                REFERENCES agent_signal_graph_snapshots(id),
+            cases_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_discovery_runs (
+            id TEXT PRIMARY KEY,
+            authority_id TEXT NOT NULL REFERENCES agent_authorities(id),
+            novelty_score REAL NOT NULL,
+            public_relevance_score REAL NOT NULL,
+            rationale TEXT NOT NULL,
+            search_triggered INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_search_leads (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES agent_discovery_runs(id),
+            query TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            snippet TEXT NOT NULL,
+            engine TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, query, url)
         )
         """
     )
@@ -451,6 +543,17 @@ def list_agent_issue_drafts() -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_agent_cycles(limit: int = 1000) -> List[Dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+        raise ValueError("agent cycle limit must be between 1 and 5000")
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM agent_cycles ORDER BY created_at DESC, id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_agent_cycle(cycle_id: str) -> Dict[str, Any] | None:
     with _connection() as connection:
         cycle = connection.execute(
@@ -528,6 +631,8 @@ def expand_agent_authorities(
             "planner",
             "builder",
             "reviewer",
+            "intent_mapper",
+            "novelty_analyst",
         }:
             raise ValueError(f"unsupported authority role: {role}")
         values = (projected_gain, confidence, estimated_cost)
@@ -819,6 +924,8 @@ def record_agent_memory_usage(role: str, metrics: Dict[str, Any]) -> Dict[str, A
         "planner",
         "builder",
         "reviewer",
+        "intent_mapper",
+        "novelty_analyst",
     }:
         raise ValueError(f"unsupported native agent role: {role}")
     metric_fields = {
@@ -870,4 +977,536 @@ def list_agent_memory_usage(limit: int = 100) -> List[Dict[str, Any]]:
             """,
             (limit,),
         ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_agent_authorities(limit: int = 1000) -> List[Dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+        raise ValueError("authority limit must be between 1 and 5000")
+    with _connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM agent_authorities
+            ORDER BY created_at DESC, id LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def persist_agent_signal_graph(
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    *,
+    stability_seconds: int,
+) -> Dict[str, Any]:
+    if (
+        isinstance(stability_seconds, bool)
+        or not isinstance(stability_seconds, int)
+        or not 0 <= stability_seconds <= 86400
+    ):
+        raise ValueError("graph stability interval must be between 0 and 86400 seconds")
+    if len(nodes) > 5000 or len(edges) > 20000:
+        raise ValueError("signal graph exceeds its bounded node or edge capacity")
+
+    required_node_fields = (
+        "id",
+        "source_type",
+        "source_id",
+        "domain",
+        "signal_type",
+        "summary",
+        "source_ref",
+        "created_at",
+    )
+    node_ids = set()
+    for node in nodes:
+        if not isinstance(node, dict) or any(
+            not isinstance(node.get(field), str) or not node[field].strip()
+            for field in required_node_fields
+        ):
+            raise ValueError("signal graph nodes are missing required text fields")
+        salience = node.get("salience")
+        if (
+            isinstance(salience, bool)
+            or not isinstance(salience, (int, float))
+            or not math.isfinite(salience)
+            or not 0 <= salience <= 1
+        ):
+            raise ValueError("signal graph salience must be between 0 and 1")
+        if len(node["summary"]) > 4000 or len(node["source_ref"]) > 1000:
+            raise ValueError("signal graph node text exceeds its size limit")
+        if node["id"] in node_ids:
+            raise ValueError("signal graph node IDs must be unique")
+        node_ids.add(node["id"])
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise ValueError("signal graph edges must be objects")
+        if edge.get("source_id") not in node_ids or edge.get("target_id") not in node_ids:
+            raise ValueError("signal graph edge references an unknown node")
+        if edge.get("source_id") == edge.get("target_id"):
+            raise ValueError("signal graph self-edges are not allowed")
+        if not isinstance(edge.get("relation"), str) or not edge["relation"].strip():
+            raise ValueError("signal graph edge relation is required")
+        weight = edge.get("weight")
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or not math.isfinite(weight)
+            or not 0 <= weight <= 1
+        ):
+            raise ValueError("signal graph edge weight must be between 0 and 1")
+
+    normalized_nodes = sorted(nodes, key=lambda node: node["id"])
+    normalized_edges = sorted(
+        edges,
+        key=lambda edge: (
+            edge["source_id"],
+            edge["target_id"],
+            edge["relation"],
+        ),
+    )
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"nodes": normalized_nodes, "edges": normalized_edges},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    now = datetime.now(timezone.utc)
+    with _connection() as connection:
+        state = connection.execute(
+            "SELECT snapshot_id, changed_at FROM agent_signal_graph_state WHERE id = 1"
+        ).fetchone()
+        if state is None or state["snapshot_id"] is None:
+            snapshot_id = uuid.uuid4().hex
+            changed_at = now.isoformat()
+            connection.execute(
+                """
+                INSERT INTO agent_signal_graph_snapshots
+                    (id, fingerprint, node_count, edge_count, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (snapshot_id, fingerprint, len(nodes), len(edges), changed_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO agent_signal_graph_state (id, snapshot_id, changed_at)
+                VALUES (1, ?, ?)
+                """,
+                (snapshot_id, changed_at),
+            )
+        else:
+            current_snapshot = connection.execute(
+                "SELECT fingerprint FROM agent_signal_graph_snapshots WHERE id = ?",
+                (state["snapshot_id"],),
+            ).fetchone()
+            if current_snapshot is None:
+                raise RuntimeError("signal graph state references a missing snapshot")
+            snapshot_id = state["snapshot_id"]
+            changed_at = state["changed_at"]
+            if current_snapshot["fingerprint"] != fingerprint:
+                changed_at = now.isoformat()
+                existing_snapshot = connection.execute(
+                    "SELECT id FROM agent_signal_graph_snapshots WHERE fingerprint = ?",
+                    (fingerprint,),
+                ).fetchone()
+                if existing_snapshot is None:
+                    snapshot_id = uuid.uuid4().hex
+                    connection.execute(
+                        """
+                        INSERT INTO agent_signal_graph_snapshots
+                            (id, fingerprint, node_count, edge_count, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (snapshot_id, fingerprint, len(nodes), len(edges), changed_at),
+                    )
+                else:
+                    snapshot_id = existing_snapshot["id"]
+                connection.execute(
+                    """
+                    UPDATE agent_signal_graph_state
+                    SET snapshot_id = ?, changed_at = ?
+                    WHERE id = 1
+                    """,
+                    (snapshot_id, changed_at),
+                )
+
+        connection.execute("DELETE FROM agent_signal_edges")
+        connection.execute("DELETE FROM agent_signal_nodes")
+        connection.executemany(
+            """
+            INSERT INTO agent_signal_nodes
+                (id, source_type, source_id, cycle_id, authority_id, domain,
+                 signal_type, salience, summary, source_ref, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    node["id"],
+                    node["source_type"],
+                    node["source_id"],
+                    node.get("cycle_id"),
+                    node.get("authority_id"),
+                    node["domain"],
+                    node["signal_type"],
+                    float(node["salience"]),
+                    node["summary"],
+                    node["source_ref"],
+                    node["created_at"],
+                )
+                for node in nodes
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO agent_signal_edges (source_id, target_id, relation, weight)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (
+                    edge["source_id"],
+                    edge["target_id"],
+                    edge["relation"],
+                    float(edge["weight"]),
+                )
+                for edge in edges
+            ],
+        )
+        suite = connection.execute(
+            "SELECT id FROM agent_intent_qa_suites WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+
+    stable_since = datetime.fromisoformat(changed_at)
+    stable_seconds = max(0, (now - stable_since).total_seconds())
+    return {
+        "snapshot_id": snapshot_id,
+        "fingerprint": fingerprint,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "stable_since": changed_at,
+        "stable_for_seconds": stable_seconds,
+        "inquiry_due": (
+            bool(nodes)
+            and stable_seconds >= stability_seconds
+            and suite is None
+        ),
+    }
+
+
+def get_agent_signal_graph() -> Dict[str, Any]:
+    with _connection() as connection:
+        state = connection.execute(
+            """
+            SELECT state.snapshot_id, state.changed_at, snapshot.fingerprint,
+                   snapshot.node_count, snapshot.edge_count
+            FROM agent_signal_graph_state AS state
+            JOIN agent_signal_graph_snapshots AS snapshot
+                ON snapshot.id = state.snapshot_id
+            WHERE state.id = 1
+            """
+        ).fetchone()
+        nodes = connection.execute(
+            "SELECT * FROM agent_signal_nodes ORDER BY created_at, id"
+        ).fetchall()
+        edges = connection.execute(
+            "SELECT * FROM agent_signal_edges ORDER BY source_id, target_id, relation"
+        ).fetchall()
+        suites = connection.execute(
+            "SELECT * FROM agent_intent_qa_suites ORDER BY created_at DESC, id"
+        ).fetchall()
+    return {
+        "snapshot": dict(state) if state is not None else None,
+        "nodes": [dict(row) for row in nodes],
+        "edges": [dict(row) for row in edges],
+        "intent_qa_suites": [
+            {
+                **dict(row),
+                "cases": json.loads(row["cases_json"]),
+            }
+            for row in suites
+        ],
+    }
+
+
+def create_agent_intent_qa_suite(
+    snapshot_id: str,
+    cases: List[Dict[str, Any]],
+    *,
+    stability_seconds: int,
+) -> Dict[str, Any]:
+    if (
+        isinstance(stability_seconds, bool)
+        or not isinstance(stability_seconds, int)
+        or not 0 <= stability_seconds <= 86400
+    ):
+        raise ValueError("graph stability interval must be between 0 and 86400 seconds")
+    if not isinstance(cases, list) or not 1 <= len(cases) <= 100:
+        raise ValueError("intent QA suite must contain between 1 and 100 cases")
+
+    node_ids = set()
+    normalized_cases = []
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("intent QA cases must be objects")
+        for field in ("title", "intent", "preconditions", "assertions"):
+            if (
+                not isinstance(case.get(field), str)
+                or not case[field].strip()
+                or len(case[field]) > 2000
+            ):
+                raise ValueError(f"intent QA case requires bounded {field} text")
+        signal_ids = case.get("signal_ids")
+        if (
+            not isinstance(signal_ids, list)
+            or not signal_ids
+            or any(not isinstance(item, str) for item in signal_ids)
+        ):
+            raise ValueError("intent QA case must reference its supporting signal nodes")
+        normalized_cases.append(
+            {
+                field: case[field].strip()
+                for field in ("title", "intent", "preconditions", "assertions")
+            }
+            | {"signal_ids": signal_ids}
+        )
+
+    now = datetime.now(timezone.utc)
+    with _connection() as connection:
+        state = connection.execute(
+            """
+            SELECT state.snapshot_id, state.changed_at
+            FROM agent_signal_graph_state AS state
+            WHERE state.id = 1
+            """
+        ).fetchone()
+        if state is None or state["snapshot_id"] != snapshot_id:
+            raise ValueError("intent QA must target the current graph snapshot")
+        if (now - datetime.fromisoformat(state["changed_at"])).total_seconds() < stability_seconds:
+            raise ValueError("signal graph has not remained stable for the required interval")
+        if connection.execute(
+            "SELECT 1 FROM agent_intent_qa_suites WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone():
+            raise ValueError("an intent QA suite already exists for this graph snapshot")
+        node_ids = {
+            row["id"]
+            for row in connection.execute("SELECT id FROM agent_signal_nodes")
+        }
+        for case in normalized_cases:
+            if any(signal_id not in node_ids for signal_id in case["signal_ids"]):
+                raise ValueError("intent QA case references a missing signal node")
+        suite_id = uuid.uuid4().hex
+        connection.execute(
+            """
+            INSERT INTO agent_intent_qa_suites
+                (id, snapshot_id, cases_json, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                suite_id,
+                snapshot_id,
+                json.dumps(normalized_cases, ensure_ascii=False),
+                now.isoformat(),
+            ),
+        )
+    return {
+        "id": suite_id,
+        "snapshot_id": snapshot_id,
+        "cases": normalized_cases,
+        "status": "draft",
+        "created_at": now.isoformat(),
+    }
+
+
+def list_agent_intent_qa_suites() -> List[Dict[str, Any]]:
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM agent_intent_qa_suites ORDER BY created_at DESC, id"
+        ).fetchall()
+    return [
+        {
+            **dict(row),
+            "cases": json.loads(row["cases_json"]),
+        }
+        for row in rows
+    ]
+
+
+def count_agent_discovery_runs_since(authority_id: str, since: str) -> int:
+    with _connection() as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM agent_discovery_runs
+            WHERE authority_id = ? AND created_at >= ?
+            """,
+            (authority_id, since),
+        ).fetchone()
+    return int(row["count"])
+
+
+def record_agent_discovery_run(
+    authority_id: str,
+    *,
+    novelty_score: float,
+    public_relevance_score: float,
+    rationale: str,
+    searches: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    scores = (novelty_score, public_relevance_score)
+    if any(
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not math.isfinite(score)
+        or not 0 <= score <= 1
+        for score in scores
+    ):
+        raise ValueError("discovery scores must be finite values between 0 and 1")
+    if not isinstance(rationale, str) or not 1 <= len(rationale.strip()) <= 2000:
+        raise ValueError("discovery rationale must contain 1 to 2000 characters")
+    if not isinstance(searches, list) or len(searches) > 3:
+        raise ValueError("a discovery run may contain at most three searches")
+    for search in searches:
+        if not isinstance(search, dict):
+            raise ValueError("search records must be objects")
+        query = search.get("query")
+        results = search.get("results")
+        if not isinstance(query, str) or not 3 <= len(query.strip()) <= 200:
+            raise ValueError("search query must contain 3 to 200 characters")
+        if not isinstance(results, list) or len(results) > 5:
+            raise ValueError("each search may contain at most five result leads")
+        for result in results:
+            if not isinstance(result, dict):
+                raise ValueError("search result leads must be objects")
+            title = result.get("title")
+            url = result.get("url")
+            snippet = result.get("snippet", "")
+            engine = result.get("engine", "search")
+            parsed_url = urlparse(url) if isinstance(url, str) else None
+            if (
+                not isinstance(title, str)
+                or not title.strip()
+                or len(title) > 300
+                or parsed_url is None
+                or parsed_url.scheme != "https"
+                or len(url) > 2048
+                or not parsed_url.hostname
+                or parsed_url.username
+                or parsed_url.password
+                or parsed_url.hostname.lower() in {"localhost"}
+                or parsed_url.hostname.lower().endswith((".local", ".internal"))
+                or not isinstance(snippet, str)
+                or len(snippet) > 1500
+                or not isinstance(engine, str)
+                or len(engine) > 80
+            ):
+                raise ValueError("search result lead is invalid")
+
+    run_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    search_triggered = bool(searches)
+    with _connection() as connection:
+        authority = connection.execute(
+            """
+            SELECT status, actual_gain FROM agent_authorities WHERE id = ?
+            """,
+            (authority_id,),
+        ).fetchone()
+        if authority is None:
+            raise ValueError("discovery authority not found")
+        if authority["status"] != "promotion_ready" or authority["actual_gain"] <= 0:
+            raise ValueError("web discovery requires a positive, reviewed authority success")
+        connection.execute(
+            """
+            INSERT INTO agent_discovery_runs
+                (id, authority_id, novelty_score, public_relevance_score,
+                 rationale, search_triggered, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                authority_id,
+                float(novelty_score),
+                float(public_relevance_score),
+                rationale.strip(),
+                int(search_triggered),
+                now,
+            ),
+        )
+        for search in searches:
+            for result in search["results"]:
+                connection.execute(
+                    """
+                    INSERT INTO agent_search_leads
+                        (id, run_id, query, title, url, snippet, engine, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        run_id,
+                        search["query"].strip(),
+                        result["title"].strip(),
+                        result["url"],
+                        result.get("snippet", "").strip(),
+                        result.get("engine", "search").strip(),
+                        now,
+                    ),
+                )
+        run = connection.execute(
+            "SELECT * FROM agent_discovery_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        leads = connection.execute(
+            "SELECT * FROM agent_search_leads WHERE run_id = ? ORDER BY query, id",
+            (run_id,),
+        ).fetchall()
+    run_result = dict(run)
+    run_result["search_triggered"] = bool(run_result["search_triggered"])
+    return {"run": run_result, "leads": [dict(row) for row in leads]}
+
+
+def list_agent_discovery_runs(limit: int = 100) -> List[Dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("discovery run limit must be between 1 and 1000")
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM agent_discovery_runs ORDER BY created_at DESC, id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            **dict(row),
+            "search_triggered": bool(row["search_triggered"]),
+        }
+        for row in rows
+    ]
+
+
+def list_agent_search_leads(
+    *, run_id: str | None = None, limit: int = 100
+) -> List[Dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("search lead limit must be between 1 and 1000")
+    with _connection() as connection:
+        if run_id is None:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_search_leads
+                ORDER BY created_at DESC, id LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_search_leads
+                WHERE run_id = ?
+                ORDER BY query, id LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
     return [dict(row) for row in rows]

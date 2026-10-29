@@ -1,14 +1,23 @@
+import json
+import os
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.autonomy_store import (
     create_agent_research_finding,
+    count_agent_discovery_runs_since,
     get_agent_authority,
     list_agent_memory_usage,
     list_agent_research_findings,
+    list_agent_discovery_runs,
+    list_agent_search_leads,
+    record_agent_discovery_run,
     review_agent_research_finding,
 )
-from src.native_agents import run_native_agent
+from src.native_agents import parse_novelty_assessment, run_native_agent
+from src.research_search import search_public_web
 from src.research_memory import (
     build_research_memory_context,
     parse_research_finding_response,
@@ -135,3 +144,113 @@ def read_research_memory_metrics():
         ),
         "history": history,
     }
+
+
+@router.post("/agent-authorities/{authority_id}/search-success")
+def search_for_public_successes(authority_id: str):
+    authority = get_agent_authority(authority_id)
+    if authority is None:
+        raise HTTPException(status_code=404, detail="Authority not found.")
+    if authority["status"] != "promotion_ready" or authority["actual_gain"] <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Public discovery is limited to positive, reviewed authority successes.",
+        )
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    if count_agent_discovery_runs_since(authority_id, since) >= 3:
+        raise HTTPException(
+            status_code=429,
+            detail="This authority has reached its three discovery runs per 24-hour limit.",
+        )
+
+    evidence = (
+        f"Independent gate evidence: {authority['gate_evidence'] or 'not recorded'}\n"
+        f"Measured gain: {authority['actual_gain']}\n"
+        f"Proposal evidence: {authority['proposal_evidence'] or 'not recorded'}"
+    )
+    try:
+        response = run_native_agent(
+            "novelty_analyst",
+            (
+                "Assess whether this independently reviewed, measured repository "
+                "success is novel and relevant to people beyond this project. "
+                "If so, propose broad public-web search queries to find comparable "
+                "work and generalizable opportunities. Do not assert uniqueness."
+            ),
+            branch_ref=authority["branch_ref"],
+            evidence=evidence,
+            context=json.dumps(
+                {
+                    "objective": authority["objective"],
+                    "axis": authority["axis"],
+                    "status": authority["status"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        assessment = parse_novelty_assessment(response)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Native novelty assessment failed: {exc}",
+        ) from exc
+
+    searches = []
+    search_notice = None
+    qualifies_for_public_search = (
+        assessment["novelty_score"] >= 0.65
+        and assessment["public_relevance_score"] >= 0.65
+    )
+    if qualifies_for_public_search and assessment["search_queries"]:
+        if not os.getenv("AI_FACTORY_RESEARCH_SEARCH_URL", "").strip():
+            search_notice = (
+                "The success qualified for broader research, but no SearXNG "
+                "provider is configured. Set AI_FACTORY_RESEARCH_SEARCH_URL."
+            )
+        else:
+            try:
+                searches = [
+                    {"query": query, "results": search_public_web(query)}
+                    for query in assessment["search_queries"]
+                ]
+            except (RuntimeError, ValueError) as exc:
+                failed_run = record_agent_discovery_run(
+                    authority_id,
+                    novelty_score=assessment["novelty_score"],
+                    public_relevance_score=assessment["public_relevance_score"],
+                    rationale=assessment["rationale"],
+                    searches=[],
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "message": f"Configured public search could not complete: {exc}",
+                        "discovery_run_id": failed_run["run"]["id"],
+                    },
+                ) from exc
+
+    saved = record_agent_discovery_run(
+        authority_id,
+        novelty_score=assessment["novelty_score"],
+        public_relevance_score=assessment["public_relevance_score"],
+        rationale=assessment["rationale"],
+        searches=searches,
+    )
+    return {
+        **saved,
+        "search_qualified": qualifies_for_public_search,
+        "search_leads_are_verified_evidence": False,
+        "search_notice": search_notice,
+    }
+
+
+@router.get("/research/discovery-runs")
+def read_research_discovery_runs():
+    return {"runs": list_agent_discovery_runs()}
+
+
+@router.get("/research/search-leads")
+def read_research_search_leads(
+    run_id: str | None = Query(default=None, max_length=64),
+):
+    return {"leads": list_agent_search_leads(run_id=run_id)}

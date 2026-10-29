@@ -1,9 +1,9 @@
 # Native research and evidence memory
 
 The native autonomy worker can analyze source material supplied by the owner and
-turn it into a compact, reviewable evidence card. It does not crawl the web or
-verify a publication automatically; the supplied source reference is retained
-so a person can check the original.
+turn it into a compact, reviewable evidence card. It does not crawl source
+pages or verify a publication automatically; the supplied source reference is
+retained so a person can check the original.
 
 ## Workflow
 
@@ -48,3 +48,44 @@ Successful native-worker calls also record only role and memory-size counts
 (not prompts, objectives, or source text). `GET /autonomy/research/metrics`
 summarizes the most recent 1,000 calls so compression and verified-finding
 density can be compared over time.
+
+## Observable signal graph and stable-state inquiries
+
+The autonomy graph is built from observable project records, not subjective
+awareness: active authority confidence and intent, reviewed research findings,
+verified measured outcomes, reviewed successes or rejected changes, and issue
+drafts. Nodes retain their evidence source; edges connect shared project
+dimensions, cycles, and evidence-to-authority relationships. A new graph
+fingerprint resets its stability clock. `POST /autonomy/graph/refresh` accepts a
+`stability_seconds` interval (default 3,600; maximum 86,400) and returns the
+current graph, stable duration, and whether a new inquiry is due.
+
+When due, `POST /autonomy/graph/inquiry` asks an intent-mapper to create a
+declarative QA inquiry suite tied to graph node IDs. The generated cases are
+stored as drafts; they are not executable code and are not run automatically.
+An external self-hosted scheduler can call the refresh/inquiry endpoints to
+check for stillness over time. `GET /autonomy/graph` and
+`GET /autonomy/graph/intent-suites` expose the current graph and generated
+drafts. The graph is bounded to 5,000 nodes and 20,000 edges per snapshot.
+
+## Success-triggered public research
+
+`POST /autonomy/agent-authorities/{authority_id}/search-success` is available
+only after an authority has a positive measured gain and has passed the
+owner-supplied test and independent-review gates. A native novelty analyst
+assesses whether the result merits public comparison. Only scores of at least
+0.65 for both novelty and public relevance trigger search, with up to three
+queries, five leads per query, and a one-megabyte response limit. The service
+requires an administrator-configured SearXNG endpoint in
+`AI_FACTORY_RESEARCH_SEARCH_URL`; it does not fetch result pages.
+
+Returned pages are stored as unverified search leads, not research findings.
+They cannot enter verified memory until their source and claims are reviewed
+through the evidence-card workflow. Public queries contain the success
+description, not repository credentials. `GET /autonomy/research/discovery-runs`
+and `GET /autonomy/research/search-leads` provide the private audit trail.
+Each authority is limited to three discovery assessments per 24 hours.
+
+Compact-memory token estimates indicate potential prompt-efficiency gains;
+they are not measured end-to-end latency improvements and are not shared across
+users. This release does not claim global learning or global capability growth.

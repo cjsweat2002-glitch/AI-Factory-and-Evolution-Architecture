@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from typing import Literal
 from src.autonomy_store import delete_push_subscription
+from src.autonomy_graph_api import router as autonomy_graph_router
 
 from src.autonomy_store import (
     agent_net_deviation,
@@ -48,6 +49,7 @@ from src.web_inspiration import ingest_web_inspiration
 
 app = FastAPI(title="AI Pool Gateway")
 app.include_router(research_router)
+app.include_router(autonomy_graph_router)
 
 CONFIG_PATH = Path("config/nodes.yaml")
 PUBLIC_PATHS = {"/", "/dashboard", "/manifest.webmanifest", "/service-worker.js", "/auth/config", "/healthz"}

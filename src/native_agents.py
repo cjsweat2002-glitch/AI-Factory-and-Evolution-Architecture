@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, List
@@ -50,6 +51,16 @@ AGENT_ROLES = {
         "You are an independent verification authority. Review evidence, tests, "
         "scope, regressions, and costs. Do not approve work merely because another "
         "agent produced it."
+    ),
+    "intent_mapper": (
+        "You map stable, evidence-linked autonomy signals into testable quality "
+        "assurance inquiries. Preserve uncertainty and never convert a hypothesis "
+        "into a fact."
+    ),
+    "novelty_analyst": (
+        "You assess whether a verified, measured project success is novel and "
+        "relevant beyond this repository. Do not equate novelty with proof of "
+        "global importance; recommend search only when evidence warrants it."
     ),
 }
 
@@ -104,6 +115,22 @@ def build_agent_prompt(
             "inferences, preserve supplied source references, and do not invent "
             "citations.\n"
         )
+    elif role == "intent_mapper":
+        output_contract = (
+            "\nReturn only one JSON object with a `cases` array. Each case must "
+            "contain `title`, `intent`, `preconditions`, `assertions`, and "
+            "`signal_ids`. Assertions are declarative expected properties; do not "
+            "return executable code. Every signal ID must be copied from the graph "
+            "provided in repository context.\n"
+        )
+    elif role == "novelty_analyst":
+        output_contract = (
+            "\nReturn only one JSON object with `novelty_score`, "
+            "`public_relevance_score`, `rationale`, and `search_queries`. Scores "
+            "must be numbers from 0 to 1. Include at most three concise search "
+            "queries, and return no queries unless the success has plausible "
+            "public relevance. Do not claim that a result is globally unique.\n"
+        )
     memory_section = ""
     if memory_context:
         memory_section = (
@@ -155,6 +182,8 @@ def parse_expansion_response(response: str) -> List[Dict[str, Any]]:
             "planner",
             "builder",
             "reviewer",
+            "intent_mapper",
+            "novelty_analyst",
         }:
             raise ValueError("authority proposal uses an unsupported role")
         if not isinstance(proposal.get("objective"), str):
@@ -301,4 +330,65 @@ def parse_issue_draft_response(response: str) -> Dict[str, str]:
         "body": body.strip(),
         "axis": axis,
         "evidence": evidence.strip(),
+    }
+
+
+def parse_intent_suite_response(response: str) -> List[Dict[str, Any]]:
+    if not isinstance(response, str):
+        raise ValueError("intent mapper response must be text")
+    try:
+        decoded = json.loads(response)
+    except json.JSONDecodeError as exc:
+        raise ValueError("intent mapper response must be JSON") from exc
+    cases = decoded.get("cases") if isinstance(decoded, dict) else None
+    if not isinstance(cases, list) or not 1 <= len(cases) <= 100:
+        raise ValueError("intent mapper response must contain 1 to 100 cases")
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("intent QA cases must be objects")
+        for field in ("title", "intent", "preconditions", "assertions"):
+            if not isinstance(case.get(field), str) or not case[field].strip():
+                raise ValueError(f"intent QA case requires {field} text")
+        if not isinstance(case.get("signal_ids"), list):
+            raise ValueError("intent QA case must reference signal IDs")
+    return cases
+
+
+def parse_novelty_assessment(response: str) -> Dict[str, Any]:
+    if not isinstance(response, str):
+        raise ValueError("novelty assessment must be text")
+    try:
+        decoded = json.loads(response)
+    except json.JSONDecodeError as exc:
+        raise ValueError("novelty assessment must be JSON") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("novelty assessment must be an object")
+
+    scores = {
+        "novelty_score": decoded.get("novelty_score"),
+        "public_relevance_score": decoded.get("public_relevance_score"),
+    }
+    if any(
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not math.isfinite(score)
+        or not 0 <= score <= 1
+        for score in scores.values()
+    ):
+        raise ValueError("novelty and public relevance scores must be between 0 and 1")
+    rationale = decoded.get("rationale")
+    queries = decoded.get("search_queries")
+    if not isinstance(rationale, str) or not 1 <= len(rationale.strip()) <= 2000:
+        raise ValueError("novelty assessment requires a bounded rationale")
+    if not isinstance(queries, list) or len(queries) > 3:
+        raise ValueError("novelty assessment may contain at most three search queries")
+    if any(
+        not isinstance(query, str) or not 3 <= len(query.strip()) <= 200
+        for query in queries
+    ):
+        raise ValueError("novelty search queries must contain 3 to 200 characters")
+    return {
+        **scores,
+        "rationale": rationale.strip(),
+        "search_queries": [query.strip() for query in queries],
     }
