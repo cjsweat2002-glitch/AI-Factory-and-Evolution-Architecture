@@ -123,22 +123,22 @@ Use the repository's issue forms to keep reports and proposals actionable:
 - **Agent implementation candidate** for bounded work that may be suitable for
   an isolated agent branch.
 
-Issues start as human-triaged proposals. Before an issue is marked
-`agent-ready`, a maintainer should confirm its scope, acceptance tests, source
-rights, and safety boundaries. The intended next stage is an explicitly
-approved self-hosted agent run that produces a branch and pull request for
-human review; it must not merge automatically. That runner integration is not
-implemented yet: adding an issue label does not currently execute an agent.
-The eventual workflow must keep model workers away from GitHub credentials,
-run generated changes in an isolated environment, and require protected
-approval before any publishing action.
+Issues start as human-triaged proposals. A maintainer can explicitly dispatch
+the **Human-reviewed issue to draft PR** workflow from `main` for an open issue
+with the `agent-candidate` label and without `needs-triage`. The workflow runs
+one bounded builder cycle, validates the patch scope, runs the test suite in a
+network-isolated container, and publishes only a draft branch/PR after approval
+through a protected GitHub environment. It never merges automatically. Issue
+text is untrusted input; model workers and test code do not receive the
+publishing token. The required runner, worker connectivity, and GitHub
+environment setup are documented in [docs/issue-to-pr.md](docs/issue-to-pr.md).
+An issue label alone never starts a run.
 
 The initial workflow roadmap is tracked in [#2](https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/issues/2)
 (human-reviewed issue-to-PR pipeline), [#3](https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/issues/3)
 (approval-gated self-hosted runs), and [#4](https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/issues/4)
 (curriculum topology and transfer evaluation). The forms are intake, not
-evidence that the planned agent automation or curriculum pipeline already
-exists.
+evidence that the planned curriculum pipeline already exists.
 
 ## Brand factory
 

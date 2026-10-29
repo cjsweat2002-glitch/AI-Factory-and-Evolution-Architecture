@@ -1,0 +1,257 @@
+name: Human-reviewed issue to draft PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Open, triaged issue carrying the agent-candidate label
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: issue-agent-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install workflow dependencies
+        run: python -m pip install .
+      - name: Validate selection and capture issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DISPATCH_ACTOR: ${{ github.actor }}
+        shell: bash
+        run: |
+          python -m src.issue_to_pr prepare \
+            --issue-number "$ISSUE_NUMBER" \
+            --repository "$REPOSITORY" \
+            --base-commit "$BASE_COMMIT" \
+            --run-url "$RUN_URL" \
+            --actor "$DISPATCH_ACTOR" \
+            --output "$RUNNER_TEMP/issue-request.json"
+      - name: Preserve request audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-request
+          path: ${{ runner.temp }}/issue-request.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  generate:
+    needs: prepare
+    runs-on: [self-hosted, linux, x64, issue-agent]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-request
+          path: ${{ runner.temp }}/request
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install workflow dependencies
+        run: python -m pip install .
+      - name: Generate one bounded candidate patch
+        env:
+          AI_FACTORY_WORKER_URL: ${{ secrets.AI_FACTORY_WORKER_URL }}
+          AI_FACTORY_MODEL: ${{ vars.AI_FACTORY_MODEL }}
+          AI_FACTORY_WORKER_TOKEN: ${{ secrets.AI_FACTORY_WORKER_TOKEN }}
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+        shell: bash
+        run: |
+          python -m src.issue_to_pr generate \
+            --repository "$GITHUB_WORKSPACE" \
+            --request "$RUNNER_TEMP/request/issue-request.json" \
+            --worktree-root "$RUNNER_TEMP/issue-agent-worktrees" \
+            --patch "$RUNNER_TEMP/candidate.patch" \
+            --manifest "$RUNNER_TEMP/manifest.json"
+      - name: Preserve patch and cycle manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-generated
+          path: |
+            ${{ runner.temp }}/candidate.patch
+            ${{ runner.temp }}/manifest.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  validate:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions: {}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install trusted workflow dependencies
+        run: python -m pip install .
+      - uses: actions/download-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-generated
+          path: ${{ runner.temp }}/generated
+      - uses: actions/download-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-request
+          path: ${{ runner.temp }}/request
+      - name: Check patch scope and apply to isolated worktree
+        id: patch
+        shell: bash
+        run: |
+          worktree="$(python -m src.issue_to_pr prepare-validation \
+            --repository "$GITHUB_WORKSPACE" \
+            --request "$RUNNER_TEMP/request/issue-request.json" \
+            --patch "$RUNNER_TEMP/generated/candidate.patch" \
+            --manifest "$RUNNER_TEMP/generated/manifest.json" \
+            --worktree-root "$RUNNER_TEMP/issue-agent-validation")"
+          echo "worktree=$worktree" >> "$GITHUB_OUTPUT"
+      - name: Download test dependencies from trusted base
+        if: steps.patch.outcome == 'success'
+        run: python -m pip download --dest "$RUNNER_TEMP/wheelhouse" . pytest
+      - name: Run tests in a network-isolated container without credentials
+        if: steps.patch.outcome == 'success'
+        id: tests
+        shell: bash
+        env:
+          VALIDATION_WORKTREE: ${{ steps.patch.outputs.worktree }}
+        run: |
+          set +e
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=2g,mode=1777 \
+            --memory 6g \
+            --cpus 2 \
+            --pids-limit 512 \
+            --security-opt no-new-privileges \
+            --cap-drop ALL \
+            --user 10001:10001 \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env HOME=/tmp/home \
+            --mount "type=bind,src=$VALIDATION_WORKTREE,dst=/repo,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/wheelhouse,dst=/wheelhouse,readonly" \
+            --workdir /repo \
+            python:3.12-slim \
+            sh -c 'mkdir -p /tmp/home &&
+              python -m venv /tmp/venv &&
+              /tmp/venv/bin/pip install --no-cache-dir --no-index \
+                --find-links=/wheelhouse ai-pool-coordinator pytest &&
+              /tmp/venv/bin/python -m pytest -q -p no:cacheprovider' \
+            > "$RUNNER_TEMP/validation.log" 2>&1
+          test_exit=$?
+          set -e
+          if [ "$test_exit" -eq 0 ]; then
+            validation_status=passed
+          else
+            validation_status=failed
+          fi
+          python -m src.issue_to_pr record-validation \
+            --manifest "$RUNNER_TEMP/generated/manifest.json" \
+            --status "$validation_status" \
+            --result-file "$RUNNER_TEMP/validation.log"
+          exit "$test_exit"
+      - name: Record validation setup failure
+        if: always() && steps.patch.outcome == 'success' && steps.tests.outcome == 'skipped'
+        run: |
+          printf '%s\n' 'Validation setup failed before tests ran.' > "$RUNNER_TEMP/validation.log"
+          python -m src.issue_to_pr record-validation \
+            --manifest "$RUNNER_TEMP/generated/manifest.json" \
+            --status failed \
+            --result-file "$RUNNER_TEMP/validation.log"
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-validation
+          path: |
+            ${{ runner.temp }}/generated/manifest.json
+            ${{ runner.temp }}/validation.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+  publish:
+    needs: validate
+    if: needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: issue-to-pr-publish
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install trusted workflow dependencies
+        run: python -m pip install .
+      - uses: actions/download-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-generated
+          path: ${{ runner.temp }}/generated
+      - uses: actions/download-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-validation
+          path: ${{ runner.temp }}/validation
+      - name: Recheck patch and publish a draft branch and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_BASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          cp "$RUNNER_TEMP/validation/manifest.json" "$RUNNER_TEMP/manifest.json"
+          python -m src.issue_to_pr publish \
+            --repository "$GITHUB_WORKSPACE" \
+            --patch "$RUNNER_TEMP/generated/candidate.patch" \
+            --manifest "$RUNNER_TEMP/manifest.json" \
+            --expected-repository "$EXPECTED_REPOSITORY" \
+            --expected-issue-number "$ISSUE_NUMBER" \
+            --expected-base-commit "$EXPECTED_BASE_COMMIT" \
+            --worktree-root "$RUNNER_TEMP/issue-agent-publisher"
+      - name: Preserve publication result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-agent-${{ github.run_id }}-publication
+          path: ${{ runner.temp }}/manifest.json
+          if-no-files-found: ignore
+          retention-days: 30
