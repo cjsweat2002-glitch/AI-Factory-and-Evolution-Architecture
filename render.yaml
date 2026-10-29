@@ -17,9 +17,11 @@ services:
         sync: false
       - key: AI_FACTORY_NODES
         sync: false
-      - key: GITHUB_REPO
-        value: cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture
-      - key: GITHUB_BRANCH
-        value: main
-      - key: GITHUB_TOKEN
+      - key: AI_FACTORY_ACCESS_TOKEN
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_CLAIMS_EMAIL
         sync: false

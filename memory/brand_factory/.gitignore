@@ -1,0 +1,3 @@
+# Factory outputs may contain private or proprietary generated data.
+*
+!.gitignore
