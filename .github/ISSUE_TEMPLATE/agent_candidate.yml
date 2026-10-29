@@ -1,0 +1,42 @@
+name: Agent implementation candidate
+description: Prepare a reviewed issue for possible isolated, agent-assisted implementation.
+title: "[Agent candidate]: "
+labels:
+  - agent-candidate
+  - needs-triage
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Bounded objective
+      description: Describe one deliverable with a clear boundary.
+    validations:
+      required: true
+  - type: textarea
+    id: repository_evidence
+    attributes:
+      label: Repository evidence
+      description: Link relevant files, behavior, tests, or reviewed research. Avoid unsupported assumptions.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance and validation
+      description: State exact tests or observable results required before review.
+    validations:
+      required: true
+  - type: textarea
+    id: guardrails
+    attributes:
+      label: Scope and guardrails
+      description: Specify files or operations to avoid, external dependencies, data rights, and security considerations.
+    validations:
+      required: true
+  - type: checkboxes
+    id: human_review
+    attributes:
+      label: Review readiness
+      options:
+        - label: I understand that an agent-produced change is only a proposal and must pass tests and human review before merge.
+          required: true

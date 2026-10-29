@@ -1,0 +1,45 @@
+name: Improvement proposal
+description: Propose a focused, measurable improvement to the factory or gateway.
+title: "[Improve]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: textarea
+    id: user_goal
+    attributes:
+      label: User or research goal
+      description: Who benefits, and what are they trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: current_gap
+    attributes:
+      label: Current gap
+      description: Link to the current behavior, evidence, or relevant source.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Keep the proposal focused; do not prescribe implementation unless necessary.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Measurable acceptance criteria
+      description: State observable outcomes and how they should be verified.
+      placeholder: |
+        - Given ..., when ..., then ...
+        - Evaluation or regression checks:
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks, costs, and safeguards
+      description: Include data provenance/licensing, privacy, security, latency, or maintenance risks where relevant.
+    validations:
+      required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Research evidence and source handling
+    url: https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/blob/main/docs/research-evidence-memory.md
+    about: Read how source provenance, review, and verified research memory work.
