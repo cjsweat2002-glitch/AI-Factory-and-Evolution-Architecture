@@ -151,6 +151,20 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_memory_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            verified_findings INTEGER NOT NULL,
+            selected_findings INTEGER NOT NULL,
+            compact_chars INTEGER NOT NULL,
+            verbose_chars INTEGER NOT NULL,
+            estimated_tokens INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     authority_columns = {
         row["name"]
         for row in connection.execute("PRAGMA table_info(agent_authorities)")
@@ -793,4 +807,67 @@ def list_agent_research_findings(
                 """,
                 (status, limit),
             ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_agent_memory_usage(role: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
+    if role not in {
+        "main_watcher",
+        "scout",
+        "explorer",
+        "researcher",
+        "planner",
+        "builder",
+        "reviewer",
+    }:
+        raise ValueError(f"unsupported native agent role: {role}")
+    metric_fields = {
+        "verified_findings": metrics.get("verified_findings"),
+        "selected_findings": metrics.get("selected_findings"),
+        "compact_chars": metrics.get("compact_chars"),
+        "verbose_chars": metrics.get("verbose_chars"),
+        "estimated_tokens": metrics.get("estimated_tokens"),
+    }
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in metric_fields.values()
+    ):
+        raise ValueError("memory usage metrics must be non-negative integers")
+    if metric_fields["selected_findings"] > metric_fields["verified_findings"]:
+        raise ValueError("selected finding count cannot exceed verified finding count")
+    with _connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO agent_memory_usage
+                (role, verified_findings, selected_findings, compact_chars,
+                 verbose_chars, estimated_tokens)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                role,
+                metric_fields["verified_findings"],
+                metric_fields["selected_findings"],
+                metric_fields["compact_chars"],
+                metric_fields["verbose_chars"],
+                metric_fields["estimated_tokens"],
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM agent_memory_usage WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    return dict(row)
+
+
+def list_agent_memory_usage(limit: int = 100) -> List[Dict[str, Any]]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("memory usage limit must be between 1 and 1000")
+    with _connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM agent_memory_usage
+            ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
     return [dict(row) for row in rows]

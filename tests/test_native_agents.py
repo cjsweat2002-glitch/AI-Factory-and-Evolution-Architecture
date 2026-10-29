@@ -172,7 +172,8 @@ def test_issue_draft_is_persisted_as_a_draft_not_published(
     assert issue["status"] == "draft"
 
 
-def test_native_worker_keeps_worker_token_out_of_model_prompt(monkeypatch):
+def test_native_worker_keeps_worker_token_out_of_model_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_FACTORY_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AI_FACTORY_WORKER_URL", "http://worker.internal:11434")
     monkeypatch.setenv("AI_FACTORY_MODEL", "test-model")
     monkeypatch.setenv("AI_FACTORY_WORKER_TOKEN", "worker-only-secret")
