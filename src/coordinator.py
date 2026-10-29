@@ -2,6 +2,7 @@ import itertools
 import json
 import os
 import secrets
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -15,22 +16,38 @@ from src.autonomy_store import delete_push_subscription
 
 from src.autonomy_store import (
     agent_net_deviation,
+    attach_authority_worktree,
     create_outcome,
+    create_agent_issue_draft,
+    create_agent_cycle,
+    evaluate_agent_authority,
+    expand_agent_authorities,
+    get_agent_authority,
+    get_agent_cycle,
     get_shared_learning_opt_in,
+    list_agent_issue_drafts,
     list_outcomes,
     save_push_subscription,
     set_shared_learning_opt_in,
     verify_outcome,
     verified_outcome_summary,
 )
+from src.authority_worktrees import apply_authority_patch, create_authority_worktree
 from src.factory import start_background_curiosity
 from src.factory_memory import log_repo_memory
 from src.factory_worker import list_background_jobs, run_background_job
 from src.notebook_guard import safe_import_notebook
+from src.native_agents import (
+    parse_expansion_response,
+    parse_issue_draft_response,
+    run_native_agent,
+)
+from src.research_api import router as research_router
 from src.push_notifications import public_vapid_key, send_push_notification
 from src.web_inspiration import ingest_web_inspiration
 
 app = FastAPI(title="AI Pool Gateway")
+app.include_router(research_router)
 
 CONFIG_PATH = Path("config/nodes.yaml")
 PUBLIC_PATHS = {"/", "/dashboard", "/manifest.webmanifest", "/service-worker.js", "/auth/config", "/healthz"}
@@ -68,6 +85,27 @@ class PushSubscriptionInput(BaseModel):
 
 class PushSubscriptionDelete(BaseModel):
     endpoint: str
+
+
+class AgentCycleInput(BaseModel):
+    objective: str = Field(min_length=10, max_length=2000)
+    base_branch: str = Field(min_length=1, max_length=255)
+    resource_budget: float = Field(gt=0, allow_inf_nan=False)
+    source_issue: str | None = Field(default=None, max_length=255)
+
+
+class AgentIssueGenerationInput(BaseModel):
+    focus: str = Field(
+        default="Find the highest-value evidence-backed improvement in this repository.",
+        max_length=1000,
+    )
+
+
+class AgentAuthorityEvaluation(BaseModel):
+    tests_passed: bool
+    reviewer_approved: bool
+    evidence: str = Field(min_length=10, max_length=4000)
+    actual_gain: float = Field(allow_inf_nan=False)
 
 
 @app.middleware("http")
@@ -239,6 +277,262 @@ async def shared_learning_preference():
 async def update_shared_learning_preference(payload: SharedLearningPreference):
     set_shared_learning_opt_in(payload.opted_in)
     return await shared_learning_preference()
+
+
+def _agent_repository_context(repository: Path | None = None) -> str:
+    repository = (
+        repository.resolve()
+        if repository is not None
+        else Path(os.getenv("AI_FACTORY_REPOSITORY_PATH", ".")).resolve()
+    )
+    context_parts = []
+    budget = 40000
+    for relative_path in (
+        "README.md",
+        "src/coordinator.py",
+        "src/autonomy_store.py",
+        "src/factory.py",
+        "src/factory_worker.py",
+    ):
+        file_path = repository / relative_path
+        if not file_path.is_file():
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not read repository context file {relative_path}: {exc}",
+            ) from exc
+        remaining = budget - sum(len(part) for part in context_parts)
+        if remaining <= 0:
+            break
+        context_parts.append(f"--- {relative_path} ---\n{content[:remaining]}")
+    if not context_parts:
+        raise HTTPException(
+            status_code=503,
+            detail="No readable repository context files were found.",
+        )
+    return "\n\n".join(context_parts)
+
+
+@app.get("/autonomy/agent-issues")
+def read_agent_issue_drafts():
+    return {"issues": list_agent_issue_drafts()}
+
+
+@app.post("/autonomy/agent-issues/generate")
+def generate_agent_issue_draft(payload: AgentIssueGenerationInput):
+    context = _agent_repository_context()
+    try:
+        response = run_native_agent(
+            "scout",
+            payload.focus,
+            branch_ref="main",
+            context=context,
+        )
+        issue = parse_issue_draft_response(response)
+        saved_issue = create_agent_issue_draft(**issue)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Native scout could not produce a valid issue draft: {exc}",
+        ) from exc
+    return {"issue": saved_issue}
+
+
+@app.post("/autonomy/agent-cycles")
+def start_agent_cycle(payload: AgentCycleInput):
+    try:
+        return create_agent_cycle(**payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/autonomy/agent-cycles/{cycle_id}")
+def read_agent_cycle(cycle_id: str):
+    cycle = get_agent_cycle(cycle_id)
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Agent cycle not found.")
+    return cycle
+
+
+@app.post("/autonomy/agent-cycles/{cycle_id}/authorities/{authority_id}/expand")
+def expand_agent_authority(cycle_id: str, authority_id: str):
+    cycle = get_agent_cycle(cycle_id)
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Agent cycle not found.")
+    parent = next(
+        (authority for authority in cycle["authorities"] if authority["id"] == authority_id),
+        None,
+    )
+    if parent is None:
+        raise HTTPException(status_code=404, detail="Authority not found in this cycle.")
+    if parent["status"] != "active" or cycle["cycle"]["status"] != "exploring":
+        raise HTTPException(status_code=409, detail="Only active authorities can expand.")
+
+    parent_worktree = parent.get("worktree_path")
+    if parent["parent_id"] is not None:
+        if not parent_worktree or not Path(parent_worktree).is_dir():
+            raise HTTPException(
+                status_code=409,
+                detail="Create the parent authority's workspace before expanding it.",
+            )
+        repository_context = Path(parent_worktree)
+    else:
+        repository_context = None
+
+    try:
+        context = _agent_repository_context(repository_context)
+        response = run_native_agent(
+            "planner",
+            parent["objective"],
+            branch_ref=parent["branch_ref"],
+            evidence=parent.get("proposal_evidence") or "",
+            context=context,
+        )
+        proposals = parse_expansion_response(response)
+        authorities = expand_agent_authorities(cycle_id, authority_id, proposals)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Native planner could not produce valid authority proposals: {exc}",
+        ) from exc
+    return {"authorities": authorities, "count": len(authorities)}
+
+
+@app.post("/autonomy/agent-authorities/{authority_id}/workspace")
+def create_agent_authority_workspace(authority_id: str):
+    authority = get_agent_authority(authority_id)
+    if authority is None:
+        raise HTTPException(status_code=404, detail="Authority not found.")
+    if authority["status"] != "active":
+        raise HTTPException(status_code=409, detail="Only active authorities can get a workspace.")
+    if authority["worktree_path"]:
+        worktree_path = Path(authority["worktree_path"])
+        if worktree_path.is_dir():
+            return {"authority": authority, "worktree_path": str(worktree_path)}
+        raise HTTPException(
+            status_code=409,
+            detail="Authority worktree is recorded but missing from disk; manual recovery is required.",
+        )
+
+    cycle = get_agent_cycle(authority["cycle_id"])
+    if cycle is None:
+        raise HTTPException(status_code=404, detail="Agent cycle not found.")
+    parent = next(
+        (
+            candidate
+            for candidate in cycle["authorities"]
+            if candidate["id"] == authority["parent_id"]
+        ),
+        None,
+    )
+    if parent is None:
+        raise HTTPException(status_code=409, detail="Authority parent is unavailable.")
+    if parent["parent_id"] is not None and not parent["worktree_path"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Create the parent authority's workspace before this child workspace.",
+        )
+    if parent["parent_id"] is not None and not Path(parent["worktree_path"]).is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail="Parent authority worktree is missing from disk.",
+        )
+
+    repository = Path(os.getenv("AI_FACTORY_REPOSITORY_PATH", ".")).resolve()
+    configured_root = os.getenv("AI_FACTORY_WORKTREE_DIR")
+    worktree_root = (
+        Path(configured_root).resolve()
+        if configured_root
+        else repository.parent / f"{repository.name}-authorities"
+    )
+    try:
+        workspace = create_authority_worktree(
+            repository=repository,
+            worktree_root=worktree_root,
+            cycle_id=authority["cycle_id"],
+            authority_id=authority["id"],
+            base_branch=parent["branch_ref"],
+        )
+        if workspace["branch_ref"] != authority["branch_ref"]:
+            raise RuntimeError("created branch does not match the recorded authority ref")
+        saved_authority = attach_authority_worktree(
+            authority_id, workspace["worktree_path"]
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Could not create an isolated authority worktree: {exc}",
+        ) from exc
+    return {"authority": saved_authority, **workspace}
+
+
+@app.post("/autonomy/agent-authorities/{authority_id}/implement")
+def implement_agent_authority(authority_id: str):
+    authority = get_agent_authority(authority_id)
+    if authority is None:
+        raise HTTPException(status_code=404, detail="Authority not found.")
+    if authority["status"] != "active":
+        raise HTTPException(status_code=409, detail="Only active authorities can be implemented.")
+    if authority["role"] != "builder":
+        raise HTTPException(
+            status_code=409,
+            detail="Only builder authorities can request a branch-scoped implementation.",
+        )
+    worktree_path = authority["worktree_path"]
+    if not worktree_path or not Path(worktree_path).is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail="Create the authority's worktree before requesting implementation.",
+        )
+
+    try:
+        context = _agent_repository_context(Path(worktree_path))
+        patch = run_native_agent(
+            "builder",
+            authority["objective"],
+            branch_ref=authority["branch_ref"],
+            evidence=authority["proposal_evidence"] or "",
+            context=context,
+        )
+        diff_stat = apply_authority_patch(
+            worktree_path,
+            patch,
+            expected_branch=authority["branch_ref"],
+        )
+    except HTTPException:
+        raise
+    except (OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Authority implementation was not applied: {exc}",
+        ) from exc
+    return {
+        "authority_id": authority_id,
+        "branch_ref": authority["branch_ref"],
+        "diff_stat": diff_stat,
+        "tests_executed": False,
+        "status": "implementation_ready_for_validation",
+    }
+
+
+@app.post("/autonomy/agent-authorities/{authority_id}/evaluate")
+def evaluate_agent_authority_route(
+    authority_id: str, payload: AgentAuthorityEvaluation
+):
+    try:
+        authority = evaluate_agent_authority(
+            authority_id, **payload.model_dump()
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if authority is None:
+        raise HTTPException(status_code=404, detail="Authority not found.")
+    return {"authority": authority}
 
 
 @app.post("/api/chat")

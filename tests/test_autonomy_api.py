@@ -1,6 +1,9 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from src.autonomy_store import list_push_subscriptions
+import src.coordinator as coordinator
 from src.coordinator import app
 
 
@@ -123,3 +126,185 @@ def test_push_subscriptions_reject_non_https_endpoints(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 400
+
+
+def test_agent_cycle_endpoints_require_owner_auth(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_FACTORY_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setenv("AI_FACTORY_DATA_DIR", str(tmp_path))
+    payload = {
+        "objective": "Find evidence-backed improvements",
+        "base_branch": "main",
+        "resource_budget": 1.0,
+    }
+
+    assert TestClient(app).post("/autonomy/agent-cycles", json=payload).status_code == 401
+    response = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}).post(
+        "/autonomy/agent-cycles", json=payload
+    )
+    assert response.status_code == 200
+    assert response.json()["cycle"]["objective"] == payload["objective"]
+
+
+def test_agent_authority_expansion_uses_native_planner_and_persists_evidence(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("AI_FACTORY_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setenv("AI_FACTORY_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AI_FACTORY_REPOSITORY_PATH", str(tmp_path / "repo"))
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "README.md").write_text("Repository context.\n", encoding="utf-8")
+    proposal = {
+        "axis": "reliability",
+        "role": "explorer",
+        "objective": "Measure worker timeout failure rate",
+        "evidence": "Existing worker retry behavior is not measured by a test.",
+        "projected_gain": 0.8,
+        "confidence": 0.9,
+        "estimated_cost": 0.2,
+    }
+    planner_calls = []
+
+    def fake_planner(role, objective, **kwargs):
+        planner_calls.append((role, objective, kwargs))
+        return json.dumps({"proposals": [proposal]})
+
+    monkeypatch.setattr(coordinator, "run_native_agent", fake_planner)
+    client = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
+    created = client.post(
+        "/autonomy/agent-cycles",
+        json={
+            "objective": "Find evidence-backed improvements",
+            "base_branch": "main",
+            "resource_budget": 1.0,
+        },
+    ).json()
+    cycle_id = created["cycle"]["id"]
+    root_id = created["authorities"][0]["id"]
+
+    response = client.post(
+        f"/autonomy/agent-cycles/{cycle_id}/authorities/{root_id}/expand"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert planner_calls[0][0:2] == ("planner", "Find evidence-backed improvements")
+    assert planner_calls[0][2]["branch_ref"] == "main"
+    refreshed = client.get(f"/autonomy/agent-cycles/{cycle_id}").json()
+    child = next(
+        authority
+        for authority in refreshed["authorities"]
+        if authority["id"] != root_id
+    )
+    assert child["proposal_evidence"] == proposal["evidence"]
+
+
+def test_native_scout_creates_a_local_issue_draft_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_FACTORY_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setenv("AI_FACTORY_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AI_FACTORY_REPOSITORY_PATH", str(tmp_path / "repo"))
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "README.md").write_text("Repository context.\n", encoding="utf-8")
+    issue = {
+        "title": "Measure worker retry behavior",
+        "body": "Describe the missing metric and add acceptance criteria for a deterministic retry test.",
+        "axis": "reliability",
+        "evidence": "The worker module has retry behavior but no corresponding counter.",
+    }
+    monkeypatch.setattr(
+        coordinator,
+        "run_native_agent",
+        lambda *args, **kwargs: json.dumps(issue),
+    )
+    client = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    generated = client.post(
+        "/autonomy/agent-issues/generate",
+        json={"focus": "Find a reliability improvement"},
+    )
+
+    assert generated.status_code == 200
+    assert generated.json()["issue"]["status"] == "draft"
+    assert generated.json()["issue"]["title"] == issue["title"]
+    drafts = client.get("/autonomy/agent-issues").json()["issues"]
+    assert drafts[0]["id"] == generated.json()["issue"]["id"]
+
+
+def test_authority_workspace_is_created_and_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_FACTORY_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setenv("AI_FACTORY_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AI_FACTORY_REPOSITORY_PATH", str(tmp_path / "repo"))
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "README.md").write_text("Repository context.\n", encoding="utf-8")
+    proposal = {
+        "axis": "reliability",
+        "role": "builder",
+        "objective": "Measure worker timeout failure rate",
+        "evidence": "Existing worker retry behavior is not measured by a test.",
+        "projected_gain": 0.8,
+        "confidence": 0.9,
+        "estimated_cost": 0.2,
+    }
+    agent_calls = []
+
+    def fake_agent(role, objective, **kwargs):
+        agent_calls.append((role, objective, kwargs))
+        if role == "planner":
+            return json.dumps({"proposals": [proposal]})
+        return "diff --git a/README.md b/README.md\n..."
+
+    monkeypatch.setattr(coordinator, "run_native_agent", fake_agent)
+    worktree_path = tmp_path / "authorities" / "child"
+    worktree_path.mkdir(parents=True)
+    (worktree_path / "README.md").write_text("Isolated authority context.\n", encoding="utf-8")
+    calls = []
+
+    def fake_worktree(**kwargs):
+        calls.append(kwargs)
+        return {
+            "branch_ref": f"agents/{kwargs['cycle_id']}/{kwargs['authority_id']}",
+            "worktree_path": str(worktree_path),
+        }
+
+    monkeypatch.setattr(coordinator, "create_authority_worktree", fake_worktree)
+    monkeypatch.setattr(
+        coordinator,
+        "apply_authority_patch",
+        lambda worktree, patch, **kwargs: "README.md | 1 +",
+    )
+    client = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
+    created = client.post(
+        "/autonomy/agent-cycles",
+        json={
+            "objective": "Find evidence-backed improvements",
+            "base_branch": "main",
+            "resource_budget": 1.0,
+        },
+    ).json()
+    cycle_id = created["cycle"]["id"]
+    root_id = created["authorities"][0]["id"]
+    expansion = client.post(
+        f"/autonomy/agent-cycles/{cycle_id}/authorities/{root_id}/expand"
+    ).json()
+    child_id = expansion["authorities"][0]["id"]
+
+    workspace = client.post(
+        f"/autonomy/agent-authorities/{child_id}/workspace"
+    )
+
+    assert workspace.status_code == 200
+    assert workspace.json()["authority"]["worktree_path"] == str(worktree_path)
+    assert calls[0]["base_branch"] == "main"
+    assert client.post(
+        f"/autonomy/agent-authorities/{child_id}/workspace"
+    ).json()["worktree_path"] == str(worktree_path)
+    assert len(calls) == 1
+    implementation = client.post(
+        f"/autonomy/agent-authorities/{child_id}/implement"
+    )
+    assert implementation.status_code == 200
+    assert implementation.json()["tests_executed"] is False
+    assert agent_calls[-1][0] == "builder"
+    assert agent_calls[-1][2]["branch_ref"] == expansion["authorities"][0]["branch_ref"]

@@ -55,4 +55,23 @@ Phone notifications use Web Push. Configure `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_K
 
 SQLite data and push subscriptions are stored under `AI_FACTORY_DATA_DIR` (default: `data/runtime`). The included Render configuration does not provision persistent storage, so this local database may be lost on redeploy or instance replacement. Configure a durable mounted volume and point `AI_FACTORY_DATA_DIR` to it before relying on stored outcomes or subscriptions.
 
-Agent-generated code is not automatically merged. The former browser-controlled direct GitHub push endpoint has been removed; a CI-gated pull-request and automatic-merge workflow remains future work.
+### Native agent issue and authority cycles
+
+The owner-only native-agent API uses an OpenAI-compatible worker from `config/nodes.yaml`, or `AI_FACTORY_WORKER_URL` and `AI_FACTORY_MODEL`. An optional `AI_FACTORY_WORKER_TOKEN` is sent only as the worker request's authorization header; it is not included in the model prompt. Set `AI_FACTORY_REPOSITORY_PATH` when the service does not start in the repository root. Agent context is assembled from a small, fixed set of project documentation and Python files.
+
+`POST /autonomy/agent-issues/generate` asks a scout to draft an evidence-backed issue and stores it locally as `draft`. It does not publish to GitHub. `GET /autonomy/agent-issues` lists saved drafts. To explore a draft, start a cycle with its local draft ID as `source_issue`:
+
+```json
+{
+  "objective": "Measure worker retry behavior",
+  "base_branch": "main",
+  "resource_budget": 1.0,
+  "source_issue": "<local-draft-id>"
+}
+```
+
+Send that object to `POST /autonomy/agent-cycles`, then call `POST /autonomy/agent-cycles/{cycle_id}/authorities/{authority_id}/expand` for the root or any active child authority. The planner can propose any number of distinct children; each must have positive projected gain after estimated cost, and the cycle stops expanding when its finite budget cannot cover another child. Gain, confidence, cost, and budget are unitless prioritization estimates, not measured money or guaranteed outcomes.
+
+Create a child branch worktree with `POST /autonomy/agent-authorities/{authority_id}/workspace`. Worktrees are created outside the repository by default, beside it, or under the path configured by `AI_FACTORY_WORKTREE_DIR`. Create the parent worktree before materializing grandchildren. A `builder` authority can use `POST /autonomy/agent-authorities/{authority_id}/implement` to request and apply a unified diff on its isolated branch. Patches are restricted to `src/`, `tests/`, `docs/`, and the root README; generated code is not executed and tests are not run by this endpoint. `POST /autonomy/agent-authorities/{authority_id}/evaluate` records an owner-supplied test result, independent-review decision, evidence, and measured gain; it does not run tests itself. No agent writes directly to `main`, pushes branches, files GitHub issues, or merges code. CI execution, credential-scoped publishing, unattended issue-to-branch execution, and promotion remain future work.
+
+The native authority endpoints require the same `AI_FACTORY_ACCESS_TOKEN` owner authentication as other private API routes. Run the coordinator inside the worker network for access to private Ollama-style workers; hosted CI runners cannot reach the local/private addresses in the sample worker registry.
