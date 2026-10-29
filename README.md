@@ -10,8 +10,8 @@ Open a terminal in the repository root and use the commands below:
 cd /workspaces/AI-Factory-and-Evolution-Architecture
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -q pytest fastapi httpx pyyaml pydantic uvicorn
-pytest -q
+pip install -q -e . pytest
+python -m pytest -q
 uvicorn src.coordinator:app --host 0.0.0.0 --port 8000 --reload
 ```
 
