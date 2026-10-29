@@ -12,6 +12,7 @@ def generate_curiosity_prompt(topic: str, folder: str) -> str:
         "You are an autonomous AI curiosity agent for this repository.\n"
         "Your job is to think like a research engineer and improve the project carefully.\n\n"
         f"Topic: {topic}\n"
+        f"Requested working directory: {folder}\n"
         f"Working directory: {root}\n\n"
         "Follow this process:\n"
         "1. Inspect the repository and identify the relevant code, config, and tests.\n"
