@@ -35,11 +35,148 @@ ADVANCEMENT_AXES = {
     "negative_impact",
 }
 
+GENOME_CAPABILITIES = {
+    "global_skills",
+    "research",
+    "code_development",
+    "engine_development",
+    "web_research",
+}
+
+_GENOME_NAME_PREFIXES = {
+    "global_skills": "Atlas",
+    "research": "Scholar",
+    "code_development": "Forge",
+    "engine_development": "Architect",
+    "web_research": "Pathfinder",
+}
+
 
 def _database_path() -> Path:
     data_dir = Path(os.getenv("AI_FACTORY_DATA_DIR", "data/runtime"))
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir / "autonomy.sqlite3"
+
+
+def _genome_name(authority_id: str, capabilities: List[str]) -> str:
+    if not capabilities:
+        prefix = "Seed"
+    else:
+        prefix = "-".join(
+            _GENOME_NAME_PREFIXES[capability] for capability in sorted(capabilities)
+        )
+    return f"{prefix}-{authority_id[:6]}"
+
+
+def _ensure_agent_genome(
+    connection: sqlite3.Connection,
+    authority_id: str,
+    seen: set[str] | None = None,
+) -> None:
+    if connection.execute(
+        "SELECT 1 FROM agent_genomes WHERE authority_id = ?", (authority_id,)
+    ).fetchone():
+        return
+    seen = seen or set()
+    if authority_id in seen:
+        raise RuntimeError("agent authority lineage contains a cycle")
+    seen.add(authority_id)
+
+    authority = connection.execute(
+        "SELECT parent_id FROM agent_authorities WHERE id = ?", (authority_id,)
+    ).fetchone()
+    if authority is None:
+        return
+
+    parent_genome = None
+    inherited_capabilities: List[str] = []
+    parent_version_id = None
+    if authority["parent_id"]:
+        parent = connection.execute(
+            "SELECT id FROM agent_authorities WHERE id = ?", (authority["parent_id"],)
+        ).fetchone()
+        if parent:
+            _ensure_agent_genome(connection, parent["id"], seen)
+            parent_genome = connection.execute(
+                """
+                SELECT g.id, g.current_version, v.id AS version_id, v.capabilities_json
+                FROM agent_genomes g
+                JOIN agent_genome_versions v
+                  ON v.genome_id = g.id AND v.version = g.current_version
+                WHERE g.authority_id = ?
+                """,
+                (authority["parent_id"],),
+            ).fetchone()
+            if parent_genome:
+                inherited_capabilities = json.loads(parent_genome["capabilities_json"])
+                parent_version_id = parent_genome["version_id"]
+    else:
+        inherited_capabilities = [
+            row["capability"]
+            for row in connection.execute(
+                """
+                SELECT capability FROM agent_universal_genome_changes
+                ORDER BY created_at, change_key
+                """
+            ).fetchall()
+        ]
+        inherited_capabilities = sorted(set(inherited_capabilities))
+
+    genome_id = uuid.uuid4().hex
+    version_id = uuid.uuid4().hex
+    capabilities_json = json.dumps(sorted(inherited_capabilities))
+    name = _genome_name(authority_id, sorted(inherited_capabilities))
+    connection.execute(
+        """
+        INSERT INTO agent_genomes
+            (id, authority_id, parent_genome_id, current_version, current_name)
+        VALUES (?, ?, ?, 1, ?)
+        """,
+        (
+            genome_id,
+            authority_id,
+            parent_genome["id"] if parent_genome else None,
+            name,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO agent_genome_versions
+            (id, genome_id, version, display_name, capabilities_json,
+             evidence, introspective_path, change_scope, universal_change_id,
+             parent_version_id)
+        VALUES (?, ?, 1, ?, ?, ?, ?, 'branch_fork', NULL, ?)
+        """,
+        (
+            version_id,
+            genome_id,
+            name,
+            capabilities_json,
+            (
+                (
+                    "Initial branch genome; capability profile inherited from "
+                    "its parent authority."
+                    if parent_genome
+                    else (
+                        "Initial authority genome; capabilities derive only from "
+                        "recorded universal changes."
+                        if inherited_capabilities
+                        else "Initial authority genome; no capabilities are presumed."
+                    )
+                )
+            ),
+            (
+                f"Forked from parent genome version {parent_version_id}."
+                if parent_version_id
+                else (
+                    "Created as a root genome from system universal-change records."
+                    if inherited_capabilities
+                    else "Created as the root genome for this authority."
+                )
+            ),
+            parent_version_id,
+        ),
+    )
 
 
 def _connect() -> sqlite3.Connection:
@@ -115,6 +252,65 @@ def _connect() -> sqlite3.Connection:
             gate_evidence TEXT,
             actual_gain REAL,
             worktree_path TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_genomes (
+            id TEXT PRIMARY KEY,
+            authority_id TEXT NOT NULL UNIQUE REFERENCES agent_authorities(id),
+            parent_genome_id TEXT REFERENCES agent_genomes(id),
+            current_version INTEGER NOT NULL,
+            current_name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_genome_versions (
+            id TEXT PRIMARY KEY,
+            genome_id TEXT NOT NULL REFERENCES agent_genomes(id),
+            version INTEGER NOT NULL,
+            display_name TEXT NOT NULL,
+            capabilities_json TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            introspective_path TEXT NOT NULL,
+            change_scope TEXT NOT NULL,
+            universal_change_id TEXT,
+            parent_version_id TEXT REFERENCES agent_genome_versions(id),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(genome_id, version)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_innovation_library (
+            id TEXT PRIMARY KEY,
+            genome_id TEXT NOT NULL REFERENCES agent_genomes(id),
+            version INTEGER NOT NULL,
+            frozen_name TEXT NOT NULL,
+            frozen_genome_json TEXT NOT NULL,
+            introspective_path TEXT NOT NULL,
+            transition_evidence TEXT NOT NULL,
+            change_scope TEXT NOT NULL,
+            universal_change_id TEXT,
+            frozen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(genome_id, version)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_universal_genome_changes (
+            change_key TEXT PRIMARY KEY,
+            capability TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            introspective_path TEXT NOT NULL,
+            affected_genomes INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -265,6 +461,11 @@ def _connect() -> sqlite3.Connection:
         connection.execute("ALTER TABLE agent_authorities ADD COLUMN worktree_path TEXT")
     if "proposal_evidence" not in authority_columns:
         connection.execute("ALTER TABLE agent_authorities ADD COLUMN proposal_evidence TEXT")
+    authority_ids = connection.execute(
+        "SELECT id FROM agent_authorities ORDER BY created_at, id"
+    ).fetchall()
+    for row in authority_ids:
+        _ensure_agent_genome(connection, row["id"])
     connection.commit()
     return connection
 
@@ -498,6 +699,7 @@ def create_agent_cycle(
             """,
             (root_id, cycle_id, objective.strip(), base_branch.strip()),
         )
+        _ensure_agent_genome(connection, root_id)
     cycle = get_agent_cycle(cycle_id)
     if cycle is None:
         raise RuntimeError("created agent cycle could not be read back")
@@ -574,6 +776,290 @@ def get_agent_authority(authority_id: str) -> Dict[str, Any] | None:
             "SELECT * FROM agent_authorities WHERE id = ?", (authority_id,)
         ).fetchone()
     return dict(row) if row is not None else None
+
+
+def _genome_profile(
+    connection: sqlite3.Connection, authority_id: str
+) -> Dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT g.id AS genome_id, g.authority_id, a.branch_ref, a.parent_id,
+               g.parent_genome_id, g.current_version, g.current_name,
+               v.id AS version_id,
+               v.capabilities_json, v.evidence, v.introspective_path,
+               v.change_scope, v.universal_change_id, v.created_at
+        FROM agent_genomes g
+        JOIN agent_authorities a ON a.id = g.authority_id
+        JOIN agent_genome_versions v
+          ON v.genome_id = g.id AND v.version = g.current_version
+        WHERE g.authority_id = ?
+        """,
+        (authority_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["capabilities"] = json.loads(result.pop("capabilities_json"))
+    return result
+
+
+def get_agent_genome(authority_id: str) -> Dict[str, Any] | None:
+    with _connection() as connection:
+        genome = _genome_profile(connection, authority_id)
+        if genome is None:
+            return None
+        versions = connection.execute(
+            """
+            SELECT * FROM agent_genome_versions
+            WHERE genome_id = ? ORDER BY version
+            """,
+            (genome["genome_id"],),
+        ).fetchall()
+        library = connection.execute(
+            """
+            SELECT * FROM agent_innovation_library
+            WHERE genome_id = ? ORDER BY version
+            """,
+            (genome["genome_id"],),
+        ).fetchall()
+    parsed_versions = [dict(row) for row in versions]
+    for version in parsed_versions:
+        version["capabilities"] = json.loads(version.pop("capabilities_json"))
+    return {
+        "current": genome,
+        "versions": parsed_versions,
+        "innovation_library": [
+            {
+                **dict(row),
+                "frozen_genome": json.loads(row["frozen_genome_json"]),
+            }
+            for row in library
+        ],
+    }
+
+
+def _list_agent_genomes(
+    connection: sqlite3.Connection,
+) -> List[Dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT g.authority_id FROM agent_genomes g
+        JOIN agent_authorities a ON a.id = g.authority_id
+        ORDER BY a.created_at, a.id
+        """
+    ).fetchall()
+    return [
+        profile
+        for row in rows
+        if (profile := _genome_profile(connection, row["authority_id"])) is not None
+    ]
+
+
+def list_agent_genomes() -> List[Dict[str, Any]]:
+    with _connection() as connection:
+        return _list_agent_genomes(connection)
+
+
+def _evolve_genome_in_transaction(
+    connection: sqlite3.Connection,
+    profile: Dict[str, Any],
+    *,
+    capability: str,
+    evidence: str,
+    introspective_path: str,
+    change_scope: str,
+    universal_change_id: str | None,
+) -> Dict[str, Any]:
+    previous_version = profile["current_version"]
+    previous_capabilities = profile["capabilities"]
+    frozen_genome = {
+        "authority_id": profile["authority_id"],
+        "genome_id": profile["genome_id"],
+        "version": previous_version,
+        "name": profile["current_name"],
+        "capabilities": previous_capabilities,
+        "evidence": profile["evidence"],
+        "introspective_path": profile["introspective_path"],
+    }
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO agent_innovation_library
+            (id, genome_id, version, frozen_name, frozen_genome_json,
+             introspective_path, transition_evidence, change_scope,
+             universal_change_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            uuid.uuid4().hex,
+            profile["genome_id"],
+            previous_version,
+            profile["current_name"],
+            json.dumps(frozen_genome, sort_keys=True),
+            introspective_path.strip(),
+            evidence.strip(),
+            change_scope,
+            universal_change_id,
+        ),
+    )
+    next_capabilities = sorted(set(previous_capabilities) | {capability})
+    next_version = previous_version + 1
+    next_name = _genome_name(profile["authority_id"], next_capabilities)
+    version_id = uuid.uuid4().hex
+    connection.execute(
+        """
+        INSERT INTO agent_genome_versions
+            (id, genome_id, version, display_name, capabilities_json,
+             evidence, introspective_path, change_scope, universal_change_id,
+             parent_version_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            version_id,
+            profile["genome_id"],
+            next_version,
+            next_name,
+            json.dumps(next_capabilities),
+            evidence.strip(),
+            introspective_path.strip(),
+            change_scope,
+            universal_change_id,
+            profile["version_id"],
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE agent_genomes
+        SET current_version = ?, current_name = ? WHERE id = ?
+        """,
+        (next_version, next_name, profile["genome_id"]),
+    )
+    evolved = _genome_profile(connection, profile["authority_id"])
+    if evolved is None:
+        raise RuntimeError("evolved authority genome could not be loaded")
+    return evolved
+
+
+def evolve_agent_genome(
+    authority_id: str,
+    *,
+    capability: str,
+    evidence: str,
+    introspective_path: str,
+) -> Dict[str, Any]:
+    if capability not in GENOME_CAPABILITIES:
+        raise ValueError(f"unsupported genome capability: {capability}")
+    if not isinstance(evidence, str) or not 10 <= len(evidence.strip()) <= 4000:
+        raise ValueError("capability evidence must contain 10 to 4000 characters")
+    if (
+        not isinstance(introspective_path, str)
+        or not 20 <= len(introspective_path.strip()) <= 4000
+    ):
+        raise ValueError("introspective path must contain 20 to 4000 characters")
+    with _connection() as connection:
+        authority = connection.execute(
+            "SELECT status, actual_gain FROM agent_authorities WHERE id = ?",
+            (authority_id,),
+        ).fetchone()
+        if authority is None:
+            raise ValueError("agent authority not found")
+        if authority["status"] != "promotion_ready" or authority["actual_gain"] is None or authority["actual_gain"] <= 0:
+            raise ValueError(
+                "local genome evolution requires a tested, reviewed authority with positive measured gain"
+            )
+        profile = _genome_profile(connection, authority_id)
+        if profile is None:
+            raise RuntimeError("authority genome is missing")
+        if capability in profile["capabilities"]:
+            raise ValueError("authority genome already has this capability")
+        return _evolve_genome_in_transaction(
+            connection,
+            profile,
+            capability=capability,
+            evidence=evidence,
+            introspective_path=introspective_path,
+            change_scope="local",
+            universal_change_id=None,
+        )
+
+
+def apply_universal_genome_change(
+    *,
+    change_key: str,
+    capability: str,
+    evidence: str,
+    introspective_path: str,
+) -> Dict[str, Any]:
+    if (
+        not isinstance(change_key, str)
+        or not 1 <= len(change_key.strip()) <= 120
+    ):
+        raise ValueError("universal genome change key must contain 1 to 120 characters")
+    if capability not in GENOME_CAPABILITIES:
+        raise ValueError(f"unsupported genome capability: {capability}")
+    if not isinstance(evidence, str) or not 10 <= len(evidence.strip()) <= 4000:
+        raise ValueError("capability evidence must contain 10 to 4000 characters")
+    if (
+        not isinstance(introspective_path, str)
+        or not 20 <= len(introspective_path.strip()) <= 4000
+    ):
+        raise ValueError("introspective path must contain 20 to 4000 characters")
+
+    normalized_key = change_key.strip()
+    with _connection() as connection:
+        existing = connection.execute(
+            "SELECT * FROM agent_universal_genome_changes WHERE change_key = ?",
+            (normalized_key,),
+        ).fetchone()
+        if existing:
+            if (
+                existing["capability"] != capability
+                or existing["evidence"] != evidence.strip()
+                or existing["introspective_path"] != introspective_path.strip()
+            ):
+                raise ValueError(
+                    "universal change key already exists with different content"
+                )
+            return {
+                "change": dict(existing),
+                "genomes": _list_agent_genomes(connection),
+                "already_applied": True,
+            }
+        profiles = _list_agent_genomes(connection)
+        for profile in profiles:
+            _evolve_genome_in_transaction(
+                connection,
+                profile,
+                capability=capability,
+                evidence=evidence,
+                introspective_path=introspective_path,
+                change_scope="universal",
+                universal_change_id=normalized_key,
+            )
+        connection.execute(
+            """
+            INSERT INTO agent_universal_genome_changes
+                (change_key, capability, evidence, introspective_path,
+                 affected_genomes)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_key,
+                capability,
+                evidence.strip(),
+                introspective_path.strip(),
+                len(profiles),
+            ),
+        )
+        change = connection.execute(
+            "SELECT * FROM agent_universal_genome_changes WHERE change_key = ?",
+            (normalized_key,),
+        ).fetchone()
+        updated = _list_agent_genomes(connection)
+    return {
+        "change": dict(change),
+        "genomes": updated,
+        "already_applied": False,
+    }
 
 
 def attach_authority_worktree(authority_id: str, worktree_path: str) -> Dict[str, Any]:
@@ -714,6 +1200,7 @@ def expand_agent_authorities(
                     item["net_score"],
                 ),
             )
+            _ensure_agent_genome(connection, item["id"])
             remaining -= item["estimated_cost"]
             created.append({**item, "branch_ref": branch_ref, "status": "active"})
         connection.execute(

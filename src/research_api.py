@@ -66,6 +66,7 @@ def research_for_agent_authority(authority_id: str, payload: AgentResearchInput)
             "researcher",
             objective,
             branch_ref=authority["branch_ref"],
+            authority_id=authority_id,
             evidence=(
                 f"Source reference: {payload.source_ref}\n"
                 f"Source material:\n{payload.source_material}"
@@ -178,6 +179,7 @@ def search_for_public_successes(authority_id: str):
                 "work and generalizable opportunities. Do not assert uniqueness."
             ),
             branch_ref=authority["branch_ref"],
+            authority_id=authority_id,
             evidence=evidence,
             context=json.dumps(
                 {

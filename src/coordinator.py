@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from typing import Literal
 from src.autonomy_store import delete_push_subscription
 from src.autonomy_graph_api import router as autonomy_graph_router
+from src.genome_api import router as genome_router
 
 from src.autonomy_store import (
     agent_net_deviation,
@@ -50,6 +51,7 @@ from src.web_inspiration import ingest_web_inspiration
 app = FastAPI(title="AI Pool Gateway")
 app.include_router(research_router)
 app.include_router(autonomy_graph_router)
+app.include_router(genome_router)
 
 CONFIG_PATH = Path("config/nodes.yaml")
 PUBLIC_PATHS = {"/", "/dashboard", "/manifest.webmanifest", "/service-worker.js", "/auth/config", "/healthz"}
@@ -390,6 +392,7 @@ def expand_agent_authority(cycle_id: str, authority_id: str):
             "planner",
             parent["objective"],
             branch_ref=parent["branch_ref"],
+            authority_id=parent["id"],
             evidence=parent.get("proposal_evidence") or "",
             context=context,
         )
@@ -498,6 +501,7 @@ def implement_agent_authority(authority_id: str):
             "builder",
             authority["objective"],
             branch_ref=authority["branch_ref"],
+            authority_id=authority["id"],
             evidence=authority["proposal_evidence"] or "",
             context=context,
         )

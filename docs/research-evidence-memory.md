@@ -89,3 +89,27 @@ Each authority is limited to three discovery assessments per 24 hours.
 Compact-memory token estimates indicate potential prompt-efficiency gains;
 they are not measured end-to-end latency improvements and are not shared across
 users. This release does not claim global learning or global capability growth.
+
+## Authority genome lineage
+
+Every authority has its own versioned genome and display name. A child starts
+from the parent's capability profile at fork time; its later local changes do
+not retroactively alter siblings or ancestors. Genome prompts contain the
+current authority ID, name, version, and capabilities as identity metadata
+only. This metadata grants no access or execution permissions.
+
+An owner may add one capability locally only after the authority has passed
+the recorded test and independent-review gates with positive measured gain.
+Evidence and an introspective development path are required. The previous
+name and genome snapshot are frozen in that authority's innovation library
+before the new version is recorded. Names are deterministically generated
+from the capability profile, so they change when the profile changes.
+
+An owner-keyed universal genome change is applied transactionally to the
+existing authority set. The key makes exact retries idempotent and conflicting
+reuse is rejected. Future root genomes incorporate recorded universal
+capabilities, and new descendants inherit those from their parent. "Universal"
+means all authorities in this owner-private coordinator, not shared learning
+across users. Genome labels do not establish legal ownership, equity, or
+financial valuation; contribution value must remain separately tied to
+reviewed evidence and measured outcomes.
