@@ -1,0 +1,49 @@
+name: Curriculum or cross-domain research
+description: Propose a source-grounded learning task based on a discipline, curriculum, or data topology.
+title: "[Curriculum]: "
+labels:
+  - curriculum-research
+  - needs-triage
+body:
+  - type: input
+    id: discipline
+    attributes:
+      label: Discipline or cross-domain connection
+      description: Name the field(s), subfield(s), or connection to investigate.
+    validations:
+      required: true
+  - type: textarea
+    id: learning_goal
+    attributes:
+      label: Learning or capability goal
+      description: What should a specialized agent be able to explain, derive, or do?
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Source material and provenance
+      description: Provide URLs, institution, author, publication/curriculum version, date, and license or usage terms when known. Do not attach restricted material.
+    validations:
+      required: true
+  - type: textarea
+    id: topology
+    attributes:
+      label: Concepts and topology
+      description: Describe concepts, prerequisites, methods, evidence, assessments, and proposed links across domains.
+    validations:
+      required: true
+  - type: textarea
+    id: transfer
+    attributes:
+      label: Transfer task and evaluation
+      description: Suggest a held-out task or rubric that tests whether the learning transfers beyond the source examples.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Boundaries and limitations
+      description: Note language, region, educational-context limits, uncertainties, and any privacy or rights concerns.
+    validations:
+      required: true

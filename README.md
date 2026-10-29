@@ -1,10 +1,89 @@
-# AI Pool Coordinator
+# AI Factory & Evolution Architecture
 
-A lightweight, modular, and containerized AI worker pool gateway and load balancer.
+A research architecture for creating original AI agents that learn from evidence,
+share useful methods, and improve across fields—starting with the knowledge and
+skills people study in colleges around the world.
 
-## Terminal Access
+## Vision
 
-Open a terminal in the repository root and use the commands below:
+This project aims to give birth to a growing family of AI agents: systems that
+can teach one another useful methods, learn from improving algorithms, and
+combine knowledge from different disciplines to solve problems in new ways.
+Its mathematical point of view is to treat knowledge as structured data
+topologies: concepts, methods, evidence, and outcomes connected across domains.
+The factory should discover which structures are useful, test how they can be
+transformed or recombined, and measure whether those transformations transfer
+to new tasks.
+
+The ambition is not simply to make another general-purpose model or to claim
+that this repository is already ahead of global AI progress. It is to build a
+measurable system for creating specialized, original agents from reusable
+learning processes—and to make those agents useful enough to compete as
+products alongside existing models.
+
+## Learning thesis
+
+College disciplines are a practical map of what people around the world train
+to understand and do. Curricula, textbooks, open educational resources,
+research, and professional standards can help identify important concepts,
+prerequisites, problem types, and assessment methods. The factory can represent
+those as source-linked knowledge graphs and use them to shape agents with
+distinct roles, domain expertise, and ways to collaborate.
+
+The intended learning loop is:
+
+1. Gather permitted, provenance-tracked source material and curriculum
+   structures across disciplines.
+2. Represent concepts, prerequisites, methods, evidence, and assessments as
+   connected topologies.
+3. Generate specialized agents and cross-domain hypotheses from those
+   structures, preserving uncertainty and source attribution.
+4. Evaluate them on held-out tasks and shared, clearly defined measures.
+5. Let agents exchange tested methods—not unverified claims—and retain changes
+   only when they improve useful outcomes without unacceptable regressions.
+
+“Teach each other” means exchanging inspectable methods, evidence, and
+evaluations. It does not imply consciousness or that one agent's generated
+claim is reliable merely because another agent repeats it.
+
+## What “getting ahead” should mean
+
+Progress must be demonstrated against named baselines, not inferred from agent
+count, graph size, self-assigned capabilities, or synthetic simulations. The
+long-term research goal is to compare agents on meaningful tasks across
+domains and, where appropriate, languages and educational contexts. Track
+task success and transfer alongside reliability, latency, compute cost,
+regressions, provenance, and human review. Keep unlike measures separate and
+publish the benchmark definitions and limitations so results can be
+reproduced.
+
+## Original agents and product potential
+
+The factory is intended to help create useful, differentiated agents that
+could become commercial products. Potential value comes from solving a
+specific user problem better, more reliably, or more affordably—not from
+claiming ownership of a curriculum, a model's output, or an agent's “genome.”
+Educational materials have different licenses and rights: record provenance
+and usage terms, prefer openly licensed or otherwise authorized sources, and
+review the applicable rights before using material for training or
+distribution. Build original agent behavior from validated methods and
+appropriately licensed inputs; do not present this project as legal advice or
+as proof of exclusivity.
+
+## What this repository does today
+
+Today, this repository is an early, owner-operated foundation: a modular
+FastAPI worker-pool gateway plus bounded simulations and native workflows for
+drafting issues, isolating proposed code changes, recording reviewed research,
+and tracking authority lineage. It can store evidence-linked signals and
+generate QA inquiry drafts, but it does not yet run a global curriculum
+pipeline, let agents teach across users, autonomously evaluate and promote
+changes, or demonstrate universal cross-domain performance. Those are research
+and engineering goals—not shipped capabilities.
+
+## Getting started
+
+Open a terminal in the repository root and use:
 
 ```bash
 cd /workspaces/AI-Factory-and-Evolution-Architecture
@@ -17,21 +96,49 @@ uvicorn src.coordinator:app --host 0.0.0.0 --port 8000 --reload
 
 You can also use the VS Code task menu to run the project tasks directly from the repo root terminal.
 
-## Architecture
+## Current architecture
 
-This coordinator intercepts requests aimed at standard LLM APIs, health-checks a registry of local or remote workers (e.g., local machines running Ollama), and routes request traffic across them in a round-robin cycle.
+The coordinator intercepts requests aimed at standard LLM APIs, health-checks
+workers listed in a registry (for example, local Ollama machines), and routes
+traffic across available workers. This pool is the infrastructure foundation
+for the longer-term learning factory; it is not itself a globally trained
+model.
 
-## Directory Layout
-- `config/nodes.yaml`: Registry listing backend node URLs and their available model weights.
-- `src/coordinator.py`: FastAPI-based API routing hub supporting streaming and static request proxies.
-- `src/health.py`: Node status tracker pinging active worker endpoints.
-- `src/proxy.py`: Translation module for bridging API formats.
-- `src/automorphic_engine_core.py`: Hyperbolic geometry, fractional-memory, sheaf-consensus, resource-scheduling, and complexity-anchor utilities.
-- `src/autonomous_brand_agent.py`: Brand entity and specialized product, evaluation, and artifact-generation workers.
-- `src/run_autopoietic_factory.py`: Bounded CLI orchestrator that writes reviewable checkpoints and metrics to `memory/brand_factory/`.
-- `src/sheaf_neurosymbolic_multiverse_engine.py`: Sheaf Laplacian, hyperbolic maps, Caputo memory, BDM anchoring, and stable HJB-controlled simulation.
-- `src/run_sheaf_multiverse.py`: CSV-exporting SAM-H5 simulation runner.
-- `tests/`: Basic routing and schema unit tests
+Core modules include `src/coordinator.py` (API gateway), `src/health.py`
+(worker health checks), and `src/proxy.py` (request translation).
+`src/automorphic_engine_core.py` and
+`src/sheaf_neurosymbolic_multiverse_engine.py` provide mathematical and
+simulation utilities; their metrics are experimental unless independently
+validated against real tasks. The brand factory and simulation runners produce
+reviewable artifacts, not market evidence or proof of agent capability.
+
+## GitHub issue development
+
+Use the repository's issue forms to keep reports and proposals actionable:
+
+- **Bug report** for reproducible failures.
+- **Improvement proposal** for a focused capability or reliability change.
+- **Curriculum or cross-domain research** for provenance-tracked learning
+  material, knowledge topologies, and transfer evaluations.
+- **Agent implementation candidate** for bounded work that may be suitable for
+  an isolated agent branch.
+
+Issues start as human-triaged proposals. Before an issue is marked
+`agent-ready`, a maintainer should confirm its scope, acceptance tests, source
+rights, and safety boundaries. The intended next stage is an explicitly
+approved self-hosted agent run that produces a branch and pull request for
+human review; it must not merge automatically. That runner integration is not
+implemented yet: adding an issue label does not currently execute an agent.
+The eventual workflow must keep model workers away from GitHub credentials,
+run generated changes in an isolated environment, and require protected
+approval before any publishing action.
+
+The initial workflow roadmap is tracked in [#2](https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/issues/2)
+(human-reviewed issue-to-PR pipeline), [#3](https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/issues/3)
+(approval-gated self-hosted runs), and [#4](https://github.com/cjsweat2002-glitch/AI-Factory-and-Evolution-Architecture/issues/4)
+(curriculum topology and transfer evaluation). The forms are intake, not
+evidence that the planned agent automation or curriculum pipeline already
+exists.
 
 ## Brand factory
 
