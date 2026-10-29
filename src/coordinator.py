@@ -1,24 +1,92 @@
 import itertools
 import json
 import os
-import subprocess
+import secrets
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from typing import Literal
+from src.autonomy_store import delete_push_subscription
 
+from src.autonomy_store import (
+    agent_net_deviation,
+    create_outcome,
+    get_shared_learning_opt_in,
+    list_outcomes,
+    save_push_subscription,
+    set_shared_learning_opt_in,
+    verify_outcome,
+    verified_outcome_summary,
+)
 from src.factory import start_background_curiosity
 from src.factory_memory import log_repo_memory
 from src.factory_worker import list_background_jobs, run_background_job
 from src.notebook_guard import safe_import_notebook
+from src.push_notifications import public_vapid_key, send_push_notification
 from src.web_inspiration import ingest_web_inspiration
 
 app = FastAPI(title="AI Pool Gateway")
 
 CONFIG_PATH = Path("config/nodes.yaml")
+PUBLIC_PATHS = {"/", "/dashboard", "/manifest.webmanifest", "/service-worker.js", "/auth/config", "/healthz"}
+
+
+class OutcomeInput(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=100)
+    contributor_id: str = Field(min_length=1, max_length=100)
+    metric: Literal[
+        "quality",
+        "adoption",
+        "reusable_contribution",
+        "time_saved",
+        "cost_saved",
+        "maintenance_cost",
+        "negative_impact",
+    ]
+    baseline: float = Field(allow_inf_nan=False)
+    observed: float = Field(allow_inf_nan=False)
+    unit: str = Field(min_length=1, max_length=40)
+    evidence: str = Field(min_length=10, max_length=2000)
+
+
+class OutcomeReview(BaseModel):
+    review_note: str = Field(min_length=10, max_length=1000)
+
+
+class SharedLearningPreference(BaseModel):
+    opted_in: bool
+
+
+class PushSubscriptionInput(BaseModel):
+    subscription: dict
+
+
+class PushSubscriptionDelete(BaseModel):
+    endpoint: str
+
+
+@app.middleware("http")
+async def require_owner_access(request: Request, call_next):
+    if request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+    expected_token = os.getenv("AI_FACTORY_ACCESS_TOKEN", "")
+    if len(expected_token) < 32:
+        return JSONResponse(
+            {"detail": "Owner access is not configured. Set AI_FACTORY_ACCESS_TOKEN to a random secret of at least 32 characters."},
+            status_code=503,
+        )
+    authorization = request.headers.get("authorization", "")
+    scheme, _, supplied_token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(
+        supplied_token, expected_token
+    ):
+        return JSONResponse({"detail": "Owner authentication required."}, status_code=401)
+    return await call_next(request)
 
 
 def load_nodes():
@@ -78,6 +146,99 @@ async def root_page():
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page():
     return FileResponse("templates/dashboard.html")
+
+
+@app.get("/auth/config")
+async def auth_config():
+    return {"access_token_configured": len(os.getenv("AI_FACTORY_ACCESS_TOKEN", "")) >= 32}
+
+
+@app.get("/healthz")
+async def health_check():
+    return {"status": "ok"}
+
+
+@app.get("/manifest.webmanifest")
+async def pwa_manifest():
+    return FileResponse("templates/manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/service-worker.js")
+async def service_worker():
+    return FileResponse("templates/service-worker.js", media_type="application/javascript")
+
+
+@app.get("/notifications/config")
+async def notification_config():
+    key = public_vapid_key()
+    if not key:
+        raise HTTPException(
+            status_code=503,
+            detail="Phone notifications are not configured. Set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_CLAIMS_EMAIL.",
+        )
+    return {"public_key": key}
+
+
+@app.post("/notifications/subscribe")
+async def subscribe_to_notifications(payload: PushSubscriptionInput):
+    try:
+        save_push_subscription(payload.subscription)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "subscribed"}
+
+
+@app.delete("/notifications/subscribe")
+async def unsubscribe_from_notifications(payload: PushSubscriptionDelete):
+    delete_push_subscription(payload.endpoint)
+    return {"status": "unsubscribed"}
+
+
+@app.get("/autonomy/outcomes")
+async def autonomy_outcomes(agent_id: str | None = None):
+    return {"outcomes": list_outcomes(agent_id)}
+
+
+@app.post("/autonomy/outcomes")
+async def submit_autonomy_outcome(payload: OutcomeInput):
+    try:
+        outcome = create_outcome(**payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "pending_review", "outcome": outcome}
+
+
+@app.post("/autonomy/outcomes/{outcome_id}/verify")
+async def review_autonomy_outcome(outcome_id: str, payload: OutcomeReview):
+    outcome = verify_outcome(outcome_id, payload.review_note)
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Pending outcome not found.")
+    send_push_notification(
+        "Agent outcome reviewed",
+        "A measured agent outcome is ready for its next private learning cycle.",
+        "outcome-verified",
+    )
+    return {"status": "verified", "outcome": outcome}
+
+
+@app.get("/autonomy/agents/{agent_id}/net-deviation")
+async def autonomy_net_deviation(agent_id: str):
+    return agent_net_deviation(agent_id)
+
+
+@app.get("/autonomy/shared-learning")
+async def shared_learning_preference():
+    return {
+        "opted_in": get_shared_learning_opt_in(),
+        "shared_aggregation_active": False,
+        "notice": "Shared aggregation is not active in this single-user release; no outcome data is sent to other users.",
+    }
+
+
+@app.put("/autonomy/shared-learning")
+async def update_shared_learning_preference(payload: SharedLearningPreference):
+    set_shared_learning_opt_in(payload.opted_in)
+    return await shared_learning_preference()
 
 
 @app.post("/api/chat")
@@ -200,10 +361,14 @@ async def create_curiosity(request: Request):
     payload = await request.json()
     topic = payload.get("topic", "general repo improvement")
     model = payload.get("model", "llama3")
+    agent_id = payload.get("agent_id", "personal-agent")
+    learning_context = verified_outcome_summary(agent_id)
     root = Path("background")
     root.mkdir(parents=True, exist_ok=True)
     folder = root / f"curiosity_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-    session = start_background_curiosity(str(folder), topic, model=model)
+    session = start_background_curiosity(
+        str(folder), topic, model=model, learning_context=learning_context
+    )
     job = run_background_job(str(folder), topic, model=model)
     return {"status": "queued", "session": session, "job": job}
 
@@ -253,41 +418,6 @@ async def factory_status():
         "memory_dir": str(memory_dir),
         "has_memory": memory_dir.exists(),
     }
-
-
-@app.post("/factory/github/push")
-async def push_factory_changes(request: Request):
-    payload = await request.json()
-    message = payload.get("message", "Factory update from the AI dashboard")
-    repo = payload.get("repo") or os.getenv("GITHUB_REPO")
-    branch = payload.get("branch") or os.getenv("GITHUB_BRANCH", "main")
-    token = payload.get("token") or os.getenv("GITHUB_TOKEN")
-
-    if not repo:
-        return JSONResponse({"error": "GitHub repo is not configured. Set GITHUB_REPO."}, status_code=400)
-    if not token:
-        return JSONResponse({"error": "GitHub token is not configured. Set GITHUB_TOKEN."}, status_code=400)
-
-    repo_path = Path(".").resolve()
-    remote_url = f"https://x-access-token:{token}@github.com/{repo}.git"
-
-    try:
-        subprocess.run(["git", "config", "user.name", "AI Factory Bot"], cwd=str(repo_path), check=True, capture_output=True, text=True)
-        subprocess.run(["git", "config", "user.email", "factory-bot@example.com"], cwd=str(repo_path), check=True, capture_output=True, text=True)
-        subprocess.run(["git", "add", "-A"], cwd=str(repo_path), check=True, capture_output=True, text=True)
-        subprocess.run(["git", "commit", "-m", message], cwd=str(repo_path), check=True, capture_output=True, text=True)
-        subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=str(repo_path), check=True, capture_output=True, text=True)
-        subprocess.run(["git", "push", "origin", branch], cwd=str(repo_path), check=True, capture_output=True, text=True)
-        return {"status": "pushed", "repo": repo, "branch": branch, "message": message}
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
-        stdout = (exc.stdout or "").strip()
-        return JSONResponse({
-            "status": "push_failed",
-            "repo": repo,
-            "branch": branch,
-            "stderr": stderr or stdout or str(exc),
-        }, status_code=500)
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])

@@ -1,0 +1,9 @@
+{
+  "name": "AI Factory",
+  "short_name": "AI Factory",
+  "description": "Private autonomous-agent dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#091522",
+  "theme_color": "#091522"
+}

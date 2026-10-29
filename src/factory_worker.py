@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import threading
 import uuid
@@ -9,6 +10,16 @@ from typing import Any, Dict, List
 
 import httpx
 import yaml
+from src.push_notifications import send_push_notification
+
+logger = logging.getLogger(__name__)
+
+
+def _notify_owner(title: str, message: str, event_type: str) -> None:
+    try:
+        send_push_notification(title, message, event_type)
+    except Exception:
+        logger.exception("Could not send owner push notification")
 
 
 def _job_state_path(base_dir: str) -> Path:
@@ -105,6 +116,11 @@ def _run_curiosity_task(job_id: str, folder: str, topic: str, model: str) -> Non
         jobs = [j for j in jobs if j.get("job_id") != job_id]
         jobs.append(job)
         _save_jobs(str(root), jobs)
+        _notify_owner(
+            "Agent research completed",
+            "Your private agent finished its research task.",
+            "agent-job-completed",
+        )
         
     except Exception as e:
         # Update job with error
@@ -117,6 +133,11 @@ def _run_curiosity_task(job_id: str, folder: str, topic: str, model: str) -> Non
                 j["completed_at"] = datetime.now(timezone.utc).isoformat()
                 break
         _save_jobs(str(root), jobs)
+        _notify_owner(
+            "Agent research failed",
+            "Your private agent task failed. Open the dashboard for details.",
+            "agent-job-failed",
+        )
 
 
 def run_background_job(folder: str, topic: str, model: str = "llama3") -> Dict[str, Any]:

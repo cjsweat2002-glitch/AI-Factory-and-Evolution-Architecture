@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#091522" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <title>AI Factory Dashboard</title>
     <style>
       :root {
@@ -26,7 +28,7 @@
       body {
         margin: 0;
         min-height: 100vh;
-        font-family: Inter, "Segoe UI", Arial, sans-serif;
+        font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
         background: radial-gradient(circle at top left, rgba(111,231,255,0.18), transparent 22%),
                     radial-gradient(circle at top right, rgba(106,232,201,0.18), transparent 18%),
                     linear-gradient(180deg, var(--bg), var(--bg-2));
@@ -44,7 +46,7 @@
       }
       .eyebrow { color: var(--teal); font-size: 0.74rem; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; }
       h1 {
-        margin: 10px 0 0; font-size: clamp(2.5rem, 5vw, 4.6rem); font-weight: 900; line-height: 0.96; letter-spacing: -0.06em; color: var(--text);
+        margin: 10px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2.5rem, 5vw, 4.6rem); font-weight: 700; line-height: 0.96; letter-spacing: -0.04em; color: var(--text);
       }
       .subhead {
         margin-top: 12px; max-width: 760px; color: var(--muted); font-size: 1.05rem; line-height: 1.7;
@@ -78,17 +80,19 @@
       }
       .mini-stat strong { display: block; font-size: 1.35rem; margin-bottom: 4px; }
       .section { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 18px; margin-top: 22px; }
-      input, textarea, button {
+      input, textarea, select, button {
         width: 100%; border-radius: 14px; border: 1px solid var(--line); background: rgba(9, 17, 28, 0.72); color: var(--text); padding: 13px 14px; font-size: 0.98rem;
         outline: none;
       }
-      input:focus, textarea:focus { border-color: rgba(111,231,255,0.55); box-shadow: 0 0 0 3px rgba(111,231,255,0.1); }
+      input:focus, textarea:focus, select:focus, button:focus-visible { border-color: rgba(111,231,255,0.75); box-shadow: 0 0 0 3px rgba(111,231,255,0.2); }
       textarea { min-height: 120px; resize: vertical; }
+      select { margin: 10px 0 0; }
       button {
         margin-top: 10px; background: linear-gradient(135deg, var(--teal), var(--cyan)); border: none; font-weight: 800; color: #061018; cursor: pointer; transition: transform 0.18s ease, box-shadow 0.18s ease;
         box-shadow: 0 14px 22px rgba(111,231,255,0.2);
       }
       button:hover { transform: translateY(-1px); }
+      button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
       .inline-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 16px; }
       .log {
         background: rgba(5, 10, 18, 0.78); border: 1px solid var(--line); border-radius: 16px; padding: 14px;
@@ -98,7 +102,12 @@
       .chat-output {
         background: rgba(5, 10, 18, 0.78); border: 1px solid var(--line); padding: 14px; border-radius: 16px; min-height: 120px; color: var(--text);
       }
-      @media (max-width: 760px) { .section{ grid-template-columns: 1fr; } }
+      @media (max-width: 760px) {
+        .section { grid-template-columns: 1fr; }
+        .inline-row { grid-template-columns: 1fr; }
+        .stats-row { grid-template-columns: 1fr; }
+        .container { padding: 18px 14px 36px; }
+      }
     </style>
   </head>
   <body>
@@ -112,6 +121,20 @@
           </div>
         </div>
         <div class="tag" id="systemStatus">Checking system…</div>
+      </div>
+
+      <div class="section">
+        <div class="card">
+          <h3>Private owner access</h3>
+          <input id="accessToken" type="password" autocomplete="current-password" placeholder="Owner access token" aria-label="Owner access token" />
+          <button id="connectOwner">Connect privately</button>
+          <div class="muted" id="authStatus" role="status" style="margin-top:12px;">Owner access is required for private agent data.</div>
+        </div>
+        <div class="card">
+          <h3>Phone notifications</h3>
+          <button id="enableNotifications">Enable push notifications</button>
+          <div class="muted" id="notificationStatus" role="status" style="margin-top:12px;">Notifications are optional and contain no private outcome details.</div>
+        </div>
       </div>
 
       <div class="stats-row">
@@ -157,13 +180,6 @@
           </div>
         </div>
 
-        <div class="card">
-          <h3>Live Opencode session</h3>
-          <div class="muted" id="liveSessionStatus">Starting live session…</div>
-          <div class="muted" id="liveSessionMeta" style="margin-top:10px;">Session ID: pending</div>
-          <div class="chat-output" id="liveSessionOutput" style="margin-top:12px;">Waiting for the AI to open a session…</div>
-          <button id="startLiveSession">Start live session</button>
-        </div>
       </div>
 
       <div class="section">
@@ -177,11 +193,30 @@
 
       <div class="section">
         <div class="card">
-          <h3>Push to GitHub</h3>
-          <input id="githubRepo" type="text" placeholder="owner/repo" />
-          <input id="githubBranch" type="text" value="main" style="margin-top:10px;" />
-          <input id="githubToken" type="password" placeholder="GitHub token" style="margin-top:10px;" />
-          <button id="pushGithub">Push factory changes</button>
+          <h3>Verified agent outcomes</h3>
+          <input id="outcomeAgent" type="text" value="personal-agent" aria-label="Agent identifier" placeholder="Agent identifier" />
+          <select id="outcomeMetric" aria-label="Outcome metric">
+            <option value="quality">Quality</option>
+            <option value="adoption">Adoption</option>
+            <option value="reusable_contribution">Reusable contribution</option>
+            <option value="time_saved">Time saved</option>
+            <option value="cost_saved">Cost saved</option>
+            <option value="maintenance_cost">Maintenance cost</option>
+            <option value="negative_impact">Negative impact</option>
+          </select>
+          <div class="inline-row">
+            <input id="outcomeBaseline" type="number" step="any" placeholder="Baseline" aria-label="Baseline value" />
+            <input id="outcomeObserved" type="number" step="any" placeholder="Observed" aria-label="Observed value" />
+          </div>
+          <input id="outcomeUnit" type="text" placeholder="Unit (e.g. hours, score)" aria-label="Outcome unit" />
+          <textarea id="outcomeEvidence" placeholder="Evidence for the baseline and observed outcome (private)"></textarea>
+          <button id="submitOutcome">Record outcome for review</button>
+          <label class="muted" style="display:flex;gap:10px;align-items:center;margin-top:16px;">
+            <input id="sharedLearningOptIn" type="checkbox" style="width:auto;" />
+            Allow anonymized signals to inform future shared improvements
+          </label>
+          <div class="muted" id="outcomeSummary" role="status" style="margin-top:12px;">Only owner-reviewed outcomes influence private learning. The shared pool is not active in this single-user release.</div>
+          <ul id="outcomeList" aria-label="Agent outcome review queue" style="margin-top:12px;"></ul>
         </div>
       </div>
 
@@ -208,8 +243,42 @@
       </div>
     </div>
 
-    <script type="module">
-      import { createOpencode } from 'https://esm.sh/@opencode-ai/sdk';
+    <script>
+      const accessTokenInput = document.getElementById('accessToken');
+      const authStatus = document.getElementById('authStatus');
+      accessTokenInput.value = sessionStorage.getItem('aiFactoryAccessToken') || '';
+
+      function apiFetch(url, options = {}) {
+        const headers = new Headers(options.headers || {});
+        const token = sessionStorage.getItem('aiFactoryAccessToken');
+        if (token) headers.set('Authorization', `Bearer ${token}`);
+        return fetch(url, { ...options, headers });
+      }
+
+      function decodeBase64Url(value) {
+        const padding = '='.repeat((4 - value.length % 4) % 4);
+        const decoded = atob((value + padding).replace(/-/g, '+').replace(/_/g, '/'));
+        return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+      }
+
+      document.getElementById('connectOwner').addEventListener('click', async () => {
+        const token = accessTokenInput.value.trim();
+        if (!token) {
+          authStatus.textContent = 'Enter the owner access token configured by the service operator.';
+          return;
+        }
+        sessionStorage.setItem('aiFactoryAccessToken', token);
+        try {
+          const response = await apiFetch('/factory/status');
+          if (!response.ok) throw new Error(response.status === 401 ? 'Token was not accepted.' : `Service returned ${response.status}.`);
+          authStatus.textContent = 'Connected. Private agent data stays on this service.';
+          refreshDashboard();
+          loadAutonomySettings();
+        } catch (error) {
+          sessionStorage.removeItem('aiFactoryAccessToken');
+          authStatus.textContent = error.message;
+        }
+      });
 
       const systemStatus = document.getElementById('systemStatus');
       const workerCount = document.getElementById('workerCount');
@@ -220,36 +289,44 @@
       const memoryPath = document.getElementById('memoryPath');
       const factoryLog = document.getElementById('factoryLog');
       const chatOutput = document.getElementById('chatOutput');
-      const liveSessionStatus = document.getElementById('liveSessionStatus');
-      const liveSessionMeta = document.getElementById('liveSessionMeta');
-      const liveSessionOutput = document.getElementById('liveSessionOutput');
 
       async function refreshDashboard() {
         try {
-          const statusRes = await fetch('/factory/status');
+          const statusRes = await apiFetch('/factory/status');
+          if (!statusRes.ok) throw new Error(statusRes.status === 401 ? 'Connect with the owner access token to view private data.' : `Factory status unavailable (${statusRes.status}).`);
           const statusData = await statusRes.json();
           const systemOnline = statusData.status === 'running';
           systemStatus.textContent = systemOnline ? 'Factory online' : 'Factory offline';
           systemStatus.style.background = systemOnline ? 'rgba(74, 222, 128, 0.12)' : 'rgba(248, 113, 113, 0.12)';
           systemStatus.style.color = systemOnline ? '#4ade80' : '#f87171';
 
-          const nodesRes = await fetch('/v1/models').catch(() => null);
+          const nodesRes = await apiFetch('/v1/models').catch(() => null);
           const nodes = nodesRes && nodesRes.ok ? await nodesRes.json() : { data: [] };
           const workers = Array.isArray(nodes.data) ? nodes.data : [];
           const workerTotal = workers.length || 0;
           workerCount.textContent = String(workerTotal);
           document.getElementById('workerMini').textContent = String(workerTotal);
-          workerList.innerHTML = workerTotal
-            ? workers.slice(0, 5).map((model) => `<li>${model.id || 'model'}</li>`).join('')
-            : '<li>No workers discovered.</li>';
+          workerList.replaceChildren();
+          (workerTotal ? workers.slice(0, 5).map((model) => model.id || 'model') : ['No workers discovered.'])
+            .forEach((label) => {
+              const item = document.createElement('li');
+              item.textContent = label;
+              workerList.append(item);
+            });
 
           const jobs = Array.isArray(statusData.background_jobs) ? statusData.background_jobs : [];
           const jobTotal = jobs.length;
           jobCount.textContent = String(jobTotal);
           document.getElementById('jobMini').textContent = String(jobTotal);
-          jobList.innerHTML = jobTotal
-            ? jobs.slice(-5).reverse().map((job) => `<li>${job.topic || 'curiosity'} · ${job.status || 'queued'}</li>`).join('')
-            : '<li>No jobs yet.</li>';
+          jobList.replaceChildren();
+          (jobTotal
+            ? jobs.slice(-5).reverse().map((job) => `${job.topic || 'curiosity'} · ${job.status || 'queued'}`)
+            : ['No jobs yet.']
+          ).forEach((label) => {
+            const item = document.createElement('li');
+            item.textContent = label;
+            jobList.append(item);
+          });
 
           memoryState.textContent = statusData.has_memory ? 'active' : 'offline';
           memoryPath.textContent = statusData.memory_dir || '/memory';
@@ -264,38 +341,6 @@
         }
       }
 
-      async function startLiveSession() {
-        try {
-          liveSessionStatus.textContent = 'Opening live session…';
-          liveSessionOutput.textContent = 'Connecting to Opencode…';
-
-          const { client } = await createOpencode();
-          const session = await client.session.create({ body: { title: 'AI Factory Launch Session' } });
-
-          liveSessionMeta.textContent = `Session ID: ${session.id}`;
-          liveSessionStatus.textContent = 'Live session connected';
-
-          const result = await client.session.prompt({
-            path: { id: session.id },
-            body: {
-              parts: [{ type: 'text', text: 'Welcome to the AI Factory. Explain the mission and current learning loop.' }],
-            },
-          });
-
-          let responseText = 'Session started successfully.';
-          if (result && typeof result === 'object') {
-            responseText = result.text || result.output || result.message || JSON.stringify(result, null, 2);
-          }
-
-          liveSessionOutput.textContent = String(responseText).slice(0, 2000);
-          factoryLog.textContent = `Live Opencode session started: ${session.id}`;
-        } catch (error) {
-          liveSessionStatus.textContent = 'Live session unavailable';
-          liveSessionOutput.textContent = `Opencode could not start: ${error.message || error}`;
-          factoryLog.textContent = `Opencode session error: ${error.message || error}`;
-        }
-      }
-
       document.getElementById('sendChat').addEventListener('click', async () => {
         const message = document.getElementById('chatInput').value.trim();
         if (!message) {
@@ -303,7 +348,7 @@
           return;
         }
         chatOutput.textContent = 'The factory is processing your guidance…';
-        const response = await fetch('/api/frontend/chat', {
+        const response = await apiFetch('/api/frontend/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -319,8 +364,6 @@
         refreshDashboard();
       });
 
-      document.getElementById('startLiveSession').addEventListener('click', startLiveSession);
-
       document.getElementById('importNotebook').addEventListener('click', async () => {
         const fileInput = document.getElementById('notebookFile');
         const file = fileInput.files[0];
@@ -331,7 +374,7 @@
 
         const formData = new FormData();
         formData.append('file', file);
-        const response = await fetch('/api/notebooks/import', {
+        const response = await apiFetch('/api/notebooks/import', {
           method: 'POST',
           body: formData,
         });
@@ -343,7 +386,7 @@
 
       document.getElementById('launchCuriosity').addEventListener('click', async () => {
         const topic = document.getElementById('curiosityTopic').value.trim() || 'general repo improvement';
-        const response = await fetch('/factory/curiosity', {
+        const response = await apiFetch('/factory/curiosity', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ topic, model: 'llama3' })
@@ -360,7 +403,7 @@
           factoryLog.textContent = 'Please describe the repo change before saving.';
           return;
         }
-        const response = await fetch('/factory/memory', {
+        const response = await apiFetch('/factory/memory', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: 'Web dashboard update', summary })
@@ -371,26 +414,132 @@
         refreshDashboard();
       });
 
-      document.getElementById('pushGithub').addEventListener('click', async () => {
-        const repo = document.getElementById('githubRepo').value.trim();
-        const branch = document.getElementById('githubBranch').value.trim() || 'main';
-        const token = document.getElementById('githubToken').value.trim();
-        if (!repo || !token) {
-          factoryLog.textContent = 'Set both the repository name and a GitHub token before pushing.';
-          return;
-        }
-        const response = await fetch('/factory/github/push', {
+      document.getElementById('submitOutcome').addEventListener('click', async () => {
+        const response = await apiFetch('/autonomy/outcomes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repo, branch, token, message: 'Factory update from dashboard' })
+          body: JSON.stringify({
+            agent_id: document.getElementById('outcomeAgent').value.trim(),
+            contributor_id: 'owner',
+            metric: document.getElementById('outcomeMetric').value,
+            baseline: Number(document.getElementById('outcomeBaseline').value),
+            observed: Number(document.getElementById('outcomeObserved').value),
+            unit: document.getElementById('outcomeUnit').value.trim(),
+            evidence: document.getElementById('outcomeEvidence').value.trim(),
+          })
         });
         const payload = await response.json();
-        factoryLog.textContent = JSON.stringify(payload, null, 2);
+        document.getElementById('outcomeSummary').textContent = response.ok
+          ? 'Outcome saved as pending review; it will not influence learning until you verify it.'
+          : payload.detail || 'Unable to save outcome.';
+        if (response.ok) {
+          document.getElementById('outcomeEvidence').value = '';
+          await loadAgentOutcomes();
+        }
+      });
+
+      async function loadAgentOutcomes() {
+        const agentId = document.getElementById('outcomeAgent').value.trim();
+        if (!agentId) return;
+        const response = await apiFetch(`/autonomy/agents/${encodeURIComponent(agentId)}/net-deviation`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const summary = data.net_deviation_index === null
+          ? 'No owner-reviewed outcomes yet. Submitted values stay pending and do not influence learning.'
+          : `Verified net deviation index: ${data.net_deviation_index} normalized percentage points across ${data.verified_outcomes} outcomes. This is not currency.`;
+        const responseList = await apiFetch(`/autonomy/outcomes?agent_id=${encodeURIComponent(agentId)}`);
+        const outcomeList = document.getElementById('outcomeList');
+        outcomeList.replaceChildren();
+        if (responseList.ok) {
+          const listData = await responseList.json();
+          listData.outcomes.forEach((outcome) => {
+            const item = document.createElement('li');
+            item.textContent = `${outcome.metric}: ${outcome.baseline} → ${outcome.observed} ${outcome.unit} · ${outcome.status}. Evidence: ${outcome.evidence}`;
+            if (outcome.status === 'pending') {
+              const verifyButton = document.createElement('button');
+              verifyButton.textContent = 'Owner reviewed: verify';
+              verifyButton.addEventListener('click', async () => {
+                const reviewResponse = await apiFetch(`/autonomy/outcomes/${encodeURIComponent(outcome.id)}/verify`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ review_note: 'Owner reviewed the submitted evidence in the dashboard.' }),
+                });
+                if (reviewResponse.ok) await loadAgentOutcomes();
+              });
+              item.append(document.createElement('br'), verifyButton);
+            }
+            outcomeList.append(item);
+          });
+        }
+        document.getElementById('outcomeSummary').textContent = summary;
+      }
+
+      async function loadAutonomySettings() {
+        const response = await apiFetch('/autonomy/shared-learning');
+        if (response.ok) {
+          const settings = await response.json();
+          document.getElementById('sharedLearningOptIn').checked = settings.opted_in;
+        }
+        await loadAgentOutcomes();
+      }
+
+      document.getElementById('sharedLearningOptIn').addEventListener('change', async (event) => {
+        const response = await apiFetch('/autonomy/shared-learning', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ opted_in: event.target.checked }),
+        });
+        const settings = await response.json();
+        document.getElementById('outcomeSummary').textContent = settings.notice;
+      });
+
+      document.getElementById('enableNotifications').addEventListener('click', async () => {
+        const status = document.getElementById('notificationStatus');
+        try {
+          if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+            throw new Error('This browser does not support web push notifications.');
+          }
+          const configResponse = await apiFetch('/notifications/config');
+          const config = await configResponse.json();
+          if (!configResponse.ok) throw new Error(config.detail || 'Push is not configured.');
+          const permission = await Notification.requestPermission();
+          if (permission !== 'granted') throw new Error('Notification permission was not granted.');
+          const registration = await navigator.serviceWorker.register('/service-worker.js');
+          let subscription = await registration.pushManager.getSubscription();
+          if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: decodeBase64Url(config.public_key),
+            });
+          }
+          const saveResponse = await apiFetch('/notifications/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subscription: subscription.toJSON() }),
+          });
+          if (!saveResponse.ok) throw new Error((await saveResponse.json()).detail || 'Unable to register this device.');
+          status.textContent = 'This device is subscribed. Notifications use generic text, not private outcome data.';
+        } catch (error) {
+          status.textContent = error.message || 'Unable to enable push notifications.';
+        }
       });
 
       refreshDashboard();
       setInterval(refreshDashboard, 4000);
-      startLiveSession();
+      fetch('/auth/config').then((response) => response.json()).then((data) => {
+        authStatus.textContent = data.access_token_configured
+          ? 'Owner access is configured. Enter the private token to connect.'
+          : 'Owner access is not configured. The service operator must set AI_FACTORY_ACCESS_TOKEN.';
+      });
+      if (accessTokenInput.value) {
+        apiFetch('/factory/status').then((response) => {
+          if (response.ok) {
+            authStatus.textContent = 'Connected. Private agent data stays on this service.';
+            loadAutonomySettings();
+          }
+        });
+      }
+      if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js');
     </script>
   </body>
 </html>

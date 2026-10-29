@@ -1,0 +1,4 @@
+# This directory is a placeholder; keep model artifacts outside Git.
+*
+!.gitignore
+!README.md

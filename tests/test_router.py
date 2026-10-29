@@ -11,7 +11,13 @@ from src.notebook_guard import safe_import_notebook
 from src.proxy import translate_openai_to_ollama, translate_ollama_to_openai
 from src.web_inspiration import ingest_web_inspiration
 
-client = TestClient(app)
+client = TestClient(app, headers={"Authorization": "Bearer test-owner-access-token-32-characters"})
+
+
+@pytest.fixture(autouse=True)
+def configure_owner_access(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_FACTORY_ACCESS_TOKEN", "test-owner-access-token-32-characters")
+    monkeypatch.setenv("AI_FACTORY_DATA_DIR", str(tmp_path))
 
 def test_translation_openai_to_ollama():
     openai_payload = {

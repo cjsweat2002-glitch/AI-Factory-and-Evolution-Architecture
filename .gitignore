@@ -2,3 +2,18 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .venv/
+data/runtime/
+
+# Local credentials, private keys, and model artifacts
+.env
+.env.*
+!.env.example
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.pem
+*.key
+*.p12
+*.pfx
